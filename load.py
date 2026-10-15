@@ -67,7 +67,7 @@ CHANNEL_LABELS = {
     "private": "Private",
     "wing": "Wing",
     "squadron": "Squadron",
-    "squadleaders": "Squadron Leaders",
+    "squadleaders": "Officer",
     "npc": "NPC",
 }
 CHANNEL_COLORS = {
@@ -98,6 +98,8 @@ DEFAULT_NOTIFY = {
     "squadleaders": True,
     "npc": False,
 }
+
+DEFAULT_POPOUT_OPACITY = 100
 
 DEFAULT_OVERLAY_ENABLED = True
 # Default overlay anchor: left side, 30% of the way down the visible overlay
@@ -255,6 +257,14 @@ def _chat_logging_enabled() -> bool:
 
 def _stay_on_top_key() -> str:
     return f"{CONFIG_PREFIX}_stay_on_top"
+
+
+def _popout_opacity_key() -> str:
+    return f"{CONFIG_PREFIX}_popout_opacity"
+
+
+def _popout_opacity() -> int:
+    return _cfg_int(_popout_opacity_key(), DEFAULT_POPOUT_OPACITY)
 
 
 def _stay_on_top_enabled() -> bool:
@@ -1605,11 +1615,13 @@ def _build_toggle_grid(
 ) -> list[tk.Checkbutton]:
     """Lay the checkboxes out in a fixed grid (deterministic size, no reflow)."""
     checks = _make_toggle_checks(parent, include_timestamp, include_origin, font_delta)
+    for col in range(columns):
+        parent.grid_columnconfigure(col, weight=1)
     for index, check in enumerate(checks):
         check.grid(
             row=index // columns,
             column=index % columns,
-            sticky="w",
+            sticky="ew",
             padx=padx,
             pady=pady,
         )
@@ -1970,6 +1982,11 @@ def _open_popout() -> None:
     _popout.geometry(f"{popout_w}x{popout_h}+{popout_x}+{popout_y}")
     _popout.minsize(320, 200)
 
+    try:
+        _popout.wm_attributes("-alpha", _popout_opacity() / 100.0)
+    except Exception:
+        pass
+
     # Pack the bottom controls first (from the bottom edge) so that shrinking the
     # window never clips the Clear button / Pause Chat / Stay on top controls; the
     # chat area absorbs whatever space is left.
@@ -1993,12 +2010,43 @@ def _open_popout() -> None:
     )
     topmost.pack(side="left", padx=(8, 0))
 
+    opacity = _popout_opacity()
+    opacity_var = tk.IntVar(value=opacity)
+    _bg, _fg = _theme_colors()
+    tk.Label(bottom, text="Opacity:", font=_ui_font(1), background=_bg, foreground=_fg).pack(side="right", padx=(0, 4))
+    opacity_slider = tk.Scale(
+        bottom,
+        from_=10,
+        to=100,
+        orient=tk.HORIZONTAL,
+        variable=opacity_var,
+        showvalue=False,
+        length=100,
+        background=_bg,
+        foreground=_fg,
+        activebackground=_bg,
+        highlightthickness=0,
+        troughcolor=_bg,
+        relief="flat",
+    )
+    opacity_slider.pack(side="right")
+
+    def _on_opacity_change(*_args) -> None:
+        val = opacity_var.get()
+        try:
+            _popout.wm_attributes("-alpha", val / 100.0)
+            config.set(_popout_opacity_key(), val)
+        except Exception:
+            pass
+
+    opacity_var.trace_add("write", _on_opacity_change)
+
     # Channel + timestamp toggles, tucked just above the bottom controls so they
     # are always reachable (packed bottom-up, after the controls row).
     toggles = tk.Frame(_popout)
     toggles.pack(side="bottom", fill="x", padx=4, pady=(0, 2))
-    _build_toggle_strip(
-        toggles, include_timestamp=True, include_origin=True, font_delta=1
+    _build_toggle_grid(
+        toggles, include_timestamp=True, include_origin=True, columns=3, font_delta=1
     )
 
     container = tk.Frame(_popout)
@@ -2072,9 +2120,27 @@ def _open_popout() -> None:
     text.configure(state="disabled")
     _set_popout_active(True)
 
+    def _restyle_opacity():
+        try:
+            s_bg, s_fg = _theme_colors()
+            opacity_slider.configure(
+                background=s_bg,
+                foreground=s_fg,
+                activebackground=s_bg,
+                troughcolor=s_bg,
+            )
+            bottom.configure(background=s_bg)
+            for child in bottom.winfo_children():
+                if isinstance(child, tk.Label):
+                    child.configure(background=s_bg, foreground=s_fg)
+        except Exception:
+            pass
+
     try:
         _popout.after_idle(_style_chat_texts)
         _popout.after(300, _style_chat_texts)
+        _popout.after(150, _restyle_opacity)
+        _popout.after(500, _restyle_opacity)
         _popout.after(150, lambda: _theme_titlebar(_popout))
         _popout.after_idle(lambda: _apply_stay_on_top(_popout))
         _popout.after(150, lambda: _apply_stay_on_top(_popout))
