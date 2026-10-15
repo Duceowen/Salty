@@ -1835,11 +1835,17 @@ def _open_popout() -> None:
     container = tk.Frame(_popout)
     container.pack(fill="both", expand=True, padx=4, pady=4)
 
-    text = tk.Text(container, wrap="word", state="disabled", height=16, width=64)
-    text.pack(side="left", fill="both", expand=True)
     bg, fg = _theme_colors()
+    # Pack the scrollbar BEFORE the text so it always keeps its parcel: when
+    # the text requests more width than fits (wide UI fonts), the packer
+    # squeezes later-packed widgets, which used to collapse the scrollbar.
+    # The canvas-drawn scrollbar follows the EDMC theme exactly (trough in the
+    # theme background, thumb in the theme accent); a classic native scrollbar
+    # keeps its light thumb on Windows and cannot be recoloured reliably.
+    text = tk.Text(container, wrap="word", state="disabled", height=16, width=64)
     scroll = ThemedScrollbar(container, command=text.yview, background=bg, foreground=fg)
     scroll.pack(side="right", fill="y")
+    text.pack(side="left", fill="both", expand=True)
     text.configure(yscrollcommand=scroll.set)
     _tag_text(text)
 
