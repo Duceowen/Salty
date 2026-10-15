@@ -16,10 +16,15 @@ the [Modern Overlay](https://github.com/EDCD/EDMC-Plugin-Registry) plugin.
   **timestamp** and **origin** toggles. These live on the plugin's **Settings tab**
   and in the **pop-out window**, so the compact main-window widget stays clean.
 - **On-screen notifications** for incoming messages, per channel, delivered via Modern Overlay.
-- **Pop-out window** for a larger, resizable chat view, with its own filter toggles.
-- **Settings** button (right of **Pause Chat**) opens a themed, resizable window
-  with the channel/timestamp toggles and the overlay options.
-- **Pause Chat** toggle so the log stops auto-scrolling while you read back.
+- **Pop-out window** for a larger, resizable chat view with the full chat log and
+  its own filter toggles.
+- **Click controls on the main chat box**: single click opens the pop-out, double
+  click opens **Settings**, right click shows both as menu items. A one-time hint
+  inside the chat box explains this for the first 10 seconds.
+- **Chat logging** (on by default) appends every message to a log file next to
+  EDMC's own logs, and the saved history is loaded back in on startup.
+- **Pause Chat** toggle (in the pop-out window) so the log stops auto-scrolling
+  while you read back.
 - Settings persisted in EDMC's own config, a dedicated tab in EDMC's Settings dialog,
   and the themed settings window.
 
@@ -54,18 +59,44 @@ Elite Dangerous uses several channel tokens; these are normalised as follows:
 
 ## Usage
 
-- **Main window** – the compact log lists chat as it happens. The filter toggles
-  are deliberately kept off this widget; use **Settings** or the pop-out window
-  instead.
+- **Main window** – the compact log lists chat as it happens. The widget itself is
+  a launcher rather than a button strip:
+
+  | Action | Result |
+  |--------|--------|
+  | Single click | opens the pop-out window |
+  | Double click | opens the **Settings** window |
+  | Right click | menu with **Pop out window** and **Settings** |
+
+  A hint reading *"Single Click to Open Chat box. Double click for settings."* is
+  shown **inside the chat box** for the first **10 seconds**; the saved chat log
+  is loaded and displayed once that hint disappears. Live messages that arrive
+  during those 10 seconds are displayed straight away. The countdown only starts
+  when the chat box is actually on screen, so the hint is never missed while
+  EDMC is showing a different tab.
+
+  While the pop-out is open, the main widget is replaced by a single line reading
+  **"Chat Pop-out Active"** – the pop-out owns the full chat log. Closing the
+  pop-out brings the live log back.
+
 - **Settings** – opens the themed Salty settings window (channel filters, timestamp
-  toggle and all overlay options). Changes apply immediately. The window is
-  resizable; it opens sized and centred over EDMC, with a minimum size that keeps
-  every control visible.
-- **Window** – opens a larger pop-out copy of the log, with its own channel +
-  timestamp toggles along the bottom. Close it any time; the main-window log keeps
-  running.
-- **Clear** – asks for confirmation, then empties the log.
-- **Pause Chat** – when ticked, the view stops jumping to the newest message.
+  toggle, chat logging and all overlay options). Changes apply immediately. The
+  window is resizable; it opens sized and centred over EDMC, with a minimum size
+  that keeps every control visible.
+- **Window** (pop-out) – opens a larger copy of the full chat log, with its own
+  channel + timestamp toggles along the bottom. Close it any time; the main-window
+  log keeps running.
+- **Clear** (pop-out) – asks for confirmation, then empties the log.
+- **Pause Chat** (pop-out) – when ticked, the view stops jumping to the newest
+  message.
+
+## Chat logging
+
+**Chat logging** is enabled by default. Every message is appended to
+`SaltyChat.log` in EDMC's own `logs` folder, and the saved history is read back
+into the plugin (up to the last 1000 messages) once the in-box click hint has been
+shown. Turn it off from the **Settings** window or the Salty tab in
+**File > Settings**.
 
 ## Settings (File > Settings > Salty)
 
@@ -75,6 +106,8 @@ Elite Dangerous uses several channel tokens; these are normalised as follows:
 - **Show timestamps** – prefix each line with the message time (`HH:MM:SS`).
 - **Show message origin** – show/hide the channel label (e.g. `[Local]`, `[System]`).
   With it off, lines read `[time] Sender: message`.
+- **Chat logging** – append every message to `SaltyChat.log` in EDMC's logs folder
+  and reload it on startup. On by default.
 - **Show incoming messages on screen** – master switch for Modern Overlay notifications.
 - **Notify me on messages in** – per-channel notification toggles (NPC is off by default).
 - **Overlay position X / Y** – where the newest notification is drawn. These are
@@ -99,7 +132,8 @@ Elite Dangerous uses several channel tokens; these are normalised as follows:
   window by following the Elite Dangerous game window. The plugin only chooses the
   X / Y inside that window; which monitor is used is decided by Modern Overlay (and
   follows the game once it is running).
-- Messages are kept in memory only (last 1000); nothing is written to disk.
+- Messages are held in memory (last 1000) and, when **Chat logging** is on (the
+  default), appended to `SaltyChat.log` in EDMC's `logs` folder.
 - The plugin follows EDMC's plugin API and performs all UI work on the main thread.
 
 ## Troubleshooting

@@ -127,12 +127,31 @@ OVERLAY_MAX_STACK = 8
 OVERLAY_BASE_WIDTH = 1280
 OVERLAY_BASE_HEIGHT = 960
 
+# Main widget interaction: a single click opens the pop-out window, a double
+# click opens settings, a right click offers both. The single-click delay has
+# to outlast the platform double-click interval so the two are not confused.
+CLICK_ACTION_DELAY_MS = 500
+
+# One-time hint shown next to the main widget at startup, before the saved chat
+# log is loaded and displayed.
+STARTUP_HINT_MS = 10000
+STARTUP_HINT_TEXT = "Single Click to Open Chat box. Double click for settings."
+
+# Shown in the main widget while the pop-out window owns the full chat log.
+POPOUT_ACTIVE_TEXT = "Chat Pop-out Active"
+
+# Chat logging appends every message to a log file in EDMC's logs folder so the
+# history survives an EDMC restart.
+DEFAULT_CHAT_LOGGING = True
+CHAT_LOG_FILENAME = "SaltyChat.log"
+
 # --------------------------------------------------------------------------- #
 # Runtime state
 # --------------------------------------------------------------------------- #
 _messages: List[Dict[str, Any]] = []
 
 _main_frame: Optional[tk.Frame] = None
+_main_text: Optional[tk.Text] = None
 _filter_vars: Dict[str, tk.BooleanVar] = {}
 _timestamp_var: Optional[tk.BooleanVar] = None
 _origin_var: Optional[tk.BooleanVar] = None
@@ -142,6 +161,17 @@ _popout: Optional[tk.Toplevel] = None
 _settings_win: Optional[tk.Toplevel] = None
 
 _prefs_vars: Dict[str, Any] = {}
+
+# Main-widget single/double click arbitration.
+_pending_click: Optional[str] = None
+_suppress_until = 0.0
+
+# Saved chat log waiting to be shown once the startup hint has been displayed.
+_history_pending: List[Dict[str, Any]] = []
+_history_snapshot_taken = False
+_history_flushed = False
+_hint_started = False
+_hint_shown = False
 
 # Overlay (Modern Overlay) state
 _overlay_send = None
@@ -205,9 +235,17 @@ def _origin_key() -> str:
     return f"{CONFIG_PREFIX}_origins"
 
 
+def _chat_logging_key() -> str:
+    return f"{CONFIG_PREFIX}_chat_logging"
+
+
+def _chat_logging_enabled() -> bool:
+    return _cfg_bool(_chat_logging_key(), DEFAULT_CHAT_LOGGING)
+
+
 def _ensure_filter_vars() -> None:
-    """Lazily create the shared show/timestamp/origin Tk variables (needs a Tk root)."""
-    global _timestamp_var, _origin_var
+    """Lazily create the shared show/timestamp/origin/freeze Tk variables (needs a Tk root)."""
+    global _timestamp_var, _origin_var, _freeze_var
     if not _filter_vars:
         for channel in CHANNELS:
             _filter_vars[channel] = tk.BooleanVar(
@@ -217,6 +255,8 @@ def _ensure_filter_vars() -> None:
         _timestamp_var = tk.BooleanVar(value=_cfg_bool(_timestamp_key(), DEFAULT_TIMESTAMPS))
     if _origin_var is None:
         _origin_var = tk.BooleanVar(value=_cfg_bool(_origin_key(), DEFAULT_ORIGINS))
+    if _freeze_var is None:
+        _freeze_var = tk.BooleanVar(value=False)
 
 
 def _timestamps_shown() -> bool:
@@ -316,6 +356,325 @@ def _is_frozen() -> bool:
         return bool(_freeze_var.get())
     except Exception:
         return False
+
+
+# --------------------------------------------------------------------------- #
+# Chat log persistence
+# --------------------------------------------------------------------------- #
+def _chat_log_dir() -> str:
+    """Best-effort location of EDMC's logs folder, with safe fallbacks."""
+    fallback = None
+    for name in (None, str(appname)):
+        try:
+            handlers = list(logging.getLogger(name).handlers) if name else list(
+                logging.getLogger().handlers
+            )
+        except Exception:
+            handlers = []
+        for handler in handlers:
+            base = getattr(handler, "baseFilename", None)
+            if not base:
+                continue
+            try:
+                directory = os.path.dirname(os.path.abspath(str(base)))
+            except Exception:
+                continue
+            if not os.path.isdir(directory):
+                continue
+            if os.path.basename(directory).lower() == "logs":
+                return directory
+            fallback = fallback or directory
+    if fallback:
+        return fallback
+    # <EDMC data dir>/plugins/<this plugin> -> <EDMC data dir>/logs
+    plugin_dir = os.path.dirname(os.path.abspath(__file__))
+    logs = os.path.join(os.path.dirname(os.path.dirname(plugin_dir)), "logs")
+    if os.path.isdir(logs):
+        return logs
+    return plugin_dir
+
+
+def _chat_log_path() -> str:
+    return os.path.join(_chat_log_dir(), CHAT_LOG_FILENAME)
+
+
+def _sanitise_field(value: Any) -> str:
+    """Flatten a value so it always survives a single log line."""
+    return str(value).replace("\t", " ").replace("\r", " ").replace("\n", " ")
+
+
+def _write_chat_log(item: Dict[str, Any]) -> None:
+    line = "\t".join(
+        (
+            _sanitise_field(item.get("time", "")),
+            _sanitise_field(item.get("channel", "")),
+            _sanitise_field(item.get("from", "")),
+            _sanitise_field(item.get("message", "")),
+        )
+    )
+    try:
+        with open(_chat_log_path(), "a", encoding="utf-8", newline="\n") as handle:
+            handle.write(line + "\n")
+    except Exception:
+        logger.exception("Failed to append to the Salty chat log")
+
+
+def _read_chat_log() -> List[Dict[str, Any]]:
+    path = _chat_log_path()
+    items: List[Dict[str, Any]] = []
+    if not os.path.isfile(path):
+        return items
+    with open(path, "r", encoding="utf-8", errors="replace") as handle:
+        for raw in handle:
+            line = raw.rstrip("\n").rstrip("\r")
+            if not line:
+                continue
+            parts = line.split("\t", 3)
+            if len(parts) != 4:
+                continue
+            stamp, channel, sender, message = parts
+            if channel not in CHANNELS:
+                channel = "private"
+            items.append(
+                {
+                    "time": stamp,
+                    "channel": channel,
+                    "from": sender,
+                    "message": message,
+                    "incoming": False,
+                }
+            )
+    if len(items) > MAX_MESSAGES:
+        items = items[-MAX_MESSAGES:]
+    return items
+
+
+def _snapshot_chat_log() -> None:
+    """Read the saved chat log once, before any live message is written."""
+    global _history_pending, _history_snapshot_taken
+    if _history_snapshot_taken:
+        return
+    if not _chat_logging_enabled():
+        return
+    _history_snapshot_taken = True
+    try:
+        _history_pending = _read_chat_log()
+    except Exception:
+        logger.exception("Failed to read the Salty chat log")
+        _history_pending = []
+
+
+def _flush_startup_history() -> None:
+    """Show the saved chat log once the startup hint has been displayed."""
+    global _history_pending, _history_flushed
+    if _history_flushed:
+        return
+    _history_flushed = True
+    history = _history_pending
+    _history_pending = []
+    if not history:
+        return
+    _messages[:0] = history
+    if len(_messages) > MAX_MESSAGES:
+        del _messages[: len(_messages) - MAX_MESSAGES]
+    try:
+        _rerender_views()
+    except Exception:
+        logger.exception("Failed to display the saved chat log")
+
+
+def _set_chat_logging(enabled: bool) -> None:
+    try:
+        config.set(_chat_logging_key(), bool(enabled))
+    except Exception:
+        logger.exception("Failed to persist the chat logging setting")
+    if enabled:
+        _snapshot_chat_log()
+        if _hint_shown:
+            _flush_startup_history()
+
+
+# --------------------------------------------------------------------------- #
+# Toplevel windows
+# --------------------------------------------------------------------------- #
+def _dialog_master(preferred: Optional[tk.Misc] = None) -> Optional[tk.Misc]:
+    """Pick the master for a Salty toplevel window.
+
+    EDMC's ``theme.register`` recursively walks plugin frames and raises
+    ``TypeError`` on any ``tk.Toplevel`` it finds, because ``Toplevel`` is a
+    subclass of ``BaseWidget`` rather than of ``tk.Widget``. Anything parented
+    to the plugin frame would therefore crash EDMC the next time it walks the
+    widget tree, so our windows hang off the application's root window instead
+    and use the plugin frame only for positioning.
+    """
+    for candidate in (_main_frame, preferred):
+        if candidate is None:
+            continue
+        try:
+            return candidate.winfo_toplevel()
+        except Exception:
+            continue
+    return getattr(tk, "_default_root", None)
+
+
+# --------------------------------------------------------------------------- #
+# Startup hint
+# --------------------------------------------------------------------------- #
+def _show_startup_hint() -> None:
+    """Show a one-time hint inside the chat box, then load the saved chat log.
+
+    The hint is an overlay label tucked into the chat box itself rather than a
+    floating window, so it always appears exactly where the click controls it
+    describes actually are.
+    """
+    global _hint_started, _hint_shown
+
+    if _hint_started:
+        return
+    _hint_started = True
+
+    def _finish() -> None:
+        global _hint_shown
+        _hint_shown = True
+        _flush_startup_history()
+
+    box = _main_text
+    if box is None:
+        _finish()
+        return
+
+    bg, fg = _theme_colors()
+    try:
+        label = tk.Label(
+            box,
+            text=STARTUP_HINT_TEXT,
+            background=bg,
+            foreground=fg,
+            font=_ui_font(1),
+            padx=10,
+            pady=6,
+            relief="solid",
+            bd=1,
+            justify="left",
+            wraplength=260,
+        )
+        label.place(relx=0.5, rely=0.5, anchor="center")
+    except Exception:
+        logger.exception("Could not show the Salty startup hint")
+        _finish()
+        return
+
+    state: Dict[str, Any] = {"timer": None, "poll": None, "dismissed": False}
+
+    def _dismiss() -> None:
+        if state["dismissed"]:
+            return
+        state["dismissed"] = True
+        for key in ("timer", "poll"):
+            handle = state.pop(key, None)
+            if handle is not None:
+                try:
+                    box.after_cancel(handle)
+                except Exception:
+                    pass
+        try:
+            label.destroy()
+        except Exception:
+            pass
+        _finish()
+
+    def _arm() -> None:
+        # Only start counting down once the box is really on screen: the Salty
+        # tab is usually not the one EDMC shows first, and a hint that expired
+        # before the box was ever displayed would be wasted.
+        state["poll"] = None
+        try:
+            if not box.winfo_exists():
+                return
+            if box.winfo_ismapped():
+                state["timer"] = box.after(STARTUP_HINT_MS, _dismiss)
+                return
+            state["poll"] = box.after(200, _arm)
+        except Exception:
+            pass
+
+    try:
+        _arm()
+    except Exception:
+        _dismiss()
+
+
+# --------------------------------------------------------------------------- #
+# Main widget interaction
+# --------------------------------------------------------------------------- #
+def _cancel_pending_click() -> None:
+    global _pending_click
+    if _pending_click is None:
+        return
+    try:
+        if _main_text is not None:
+            _main_text.after_cancel(_pending_click)
+    except Exception:
+        pass
+    _pending_click = None
+
+
+def _open_popout_deferred() -> None:
+    global _pending_click
+    _pending_click = None
+    _open_popout()
+
+
+def _on_chat_click(event: tk.Event) -> str:
+    global _pending_click
+    _cancel_pending_click()
+    # Tk may deliver <Button-1> and <Double-Button-1> for the same physical
+    # press in either order, so ignore the trailing single click too.
+    if time.monotonic() < _suppress_until:
+        return "break"
+    try:
+        _pending_click = event.widget.after(CLICK_ACTION_DELAY_MS, _open_popout_deferred)
+    except Exception:
+        _open_popout()
+    return "break"
+
+
+def _on_chat_double_click(event: tk.Event) -> str:
+    global _suppress_until
+    _cancel_pending_click()
+    _suppress_until = time.monotonic() + (CLICK_ACTION_DELAY_MS / 1000.0)
+    _open_settings()
+    return "break"
+
+
+def _build_chat_menu() -> tk.Menu:
+    """The right-click menu shown over the main chat widget."""
+    bg, fg = _theme_colors()
+    menu = tk.Menu(
+        tearoff=0,
+        background=bg,
+        foreground=fg,
+        activebackground=fg,
+        activeforeground=bg,
+        relief="flat",
+        bd=1,
+        font=_ui_font(1),
+    )
+    menu.add_command(label="Pop out window", command=_open_popout)
+    menu.add_command(label="Settings", command=_open_settings)
+    return menu
+
+
+def _on_chat_menu(event: tk.Event) -> str:
+    menu = _build_chat_menu()
+    try:
+        menu.tk_popup(event.x_root, event.y_root)
+    finally:
+        try:
+            menu.grab_release()
+        except Exception:
+            pass
+    return "break"
 
 
 # --------------------------------------------------------------------------- #
@@ -577,6 +936,9 @@ def _add_message(channel: str, sender: str, message: str, incoming: bool, entry:
     if len(_messages) > MAX_MESSAGES:
         del _messages[: len(_messages) - MAX_MESSAGES]
 
+    if _chat_logging_enabled():
+        _write_chat_log(item)
+
     if _channel_shown(channel):
         for text in list(_views):
             try:
@@ -599,7 +961,7 @@ def _rerender_views() -> None:
 def _themed_confirm(parent: tk.Misc, message: str) -> bool:
     """Show a modal Yes/No dialog styled with EDMC's active theme colours."""
     try:
-        dlg = tk.Toplevel(parent)
+        dlg = tk.Toplevel(_dialog_master(parent))
     except Exception:
         return True
 
@@ -1014,6 +1376,36 @@ def _unregister_view(text: tk.Text) -> None:
         _views.remove(text)
 
 
+def _set_popout_active(active: bool) -> None:
+    """Swap the main widget between the live log and a one-line placeholder.
+
+    While the pop-out window is open it owns the full chat log, so the compact
+    main-window widget is reduced to a single line saying so.
+    """
+    text = _main_text
+    if text is None:
+        return
+    try:
+        if not text.winfo_exists():
+            return
+    except Exception:
+        return
+    try:
+        if active:
+            _unregister_view(text)
+            text.configure(state="normal")
+            text.delete("1.0", "end")
+            text.insert("end", POPOUT_ACTIVE_TEXT)
+            text.configure(state="disabled")
+            text.yview_moveto(0)
+        else:
+            if text not in _views:
+                _views.append(text)
+            _render_all(text)
+    except Exception:
+        logger.exception("Failed to update the main chat widget")
+
+
 def _on_filter_change() -> None:
     for channel in CHANNELS:
         var = _filter_vars.get(channel)
@@ -1174,7 +1566,7 @@ def _open_settings() -> None:
         return
 
     try:
-        dlg = tk.Toplevel(parent)
+        dlg = tk.Toplevel(_dialog_master(parent))
     except Exception:
         logger.exception("Could not open Salty settings window")
         return
@@ -1217,6 +1609,15 @@ def _open_settings() -> None:
         selectcolor=bg, highlightthickness=0, bd=0, font=_ui_font(0), anchor="w",
     ).pack(anchor="w", pady=(0, 8))
 
+    chat_var = tk.BooleanVar(value=_chat_logging_enabled())
+    tk.Checkbutton(
+        body,
+        text="Chat logging (keep the chat history in a log file)",
+        variable=chat_var,
+        background=bg, foreground=fg, activebackground=bg, activeforeground=fg,
+        selectcolor=bg, highlightthickness=0, bd=0, font=_ui_font(0), anchor="w",
+    ).pack(anchor="w", pady=(0, 8))
+
     grid = tk.Frame(body, background=bg)
     grid.pack(fill="x")
 
@@ -1251,6 +1652,7 @@ def _open_settings() -> None:
     def _close() -> None:
         global _settings_win
         _save_overlay_settings(overlay_var, x_var, y_var, ttl_var, size_var)
+        _set_chat_logging(bool(chat_var.get()))
         try:
             dlg.destroy()
         except Exception:
@@ -1332,7 +1734,7 @@ def _open_popout() -> None:
         return
 
     try:
-        _popout = tk.Toplevel(parent)
+        _popout = tk.Toplevel(_dialog_master(parent))
     except Exception:
         logger.exception("Could not create Salty pop-out window")
         _popout = None
@@ -1376,10 +1778,12 @@ def _open_popout() -> None:
         except Exception:
             pass
         _popout = None
+        _set_popout_active(False)
 
     _popout.protocol("WM_DELETE_WINDOW", _on_close)
 
     _register_view(text)
+    _set_popout_active(True)
 
     try:
         _popout.after_idle(_style_chat_texts)
@@ -1391,7 +1795,7 @@ def _open_popout() -> None:
 
 def plugin_app(parent: tk.Frame) -> tk.Frame:
     """Build the Salty widget for the EDMC main window."""
-    global _main_frame, _freeze_var
+    global _main_frame, _main_text
 
     _main_frame = tk.Frame(parent)
 
@@ -1411,15 +1815,13 @@ def plugin_app(parent: tk.Frame) -> tk.Frame:
     text.configure(yscrollcommand=scroll.set)
     _tag_text(text)
 
-    buttons = tk.Frame(_main_frame)
-    buttons.pack(fill="x", expand=False, padx=2, pady=(0, 2))
+    # No button strip: a single click opens the pop-out, a double click opens
+    # settings, and a right click offers both from a small menu.
+    text.bind("<Button-1>", _on_chat_click)
+    text.bind("<Double-Button-1>", _on_chat_double_click)
+    text.bind("<Button-3>", _on_chat_menu)
 
-    _freeze_var = tk.BooleanVar(value=False)
-    tk.Button(buttons, text="Clear", command=_clear_messages, font=_ui_font(1)).pack(side="left")
-    tk.Button(buttons, text="Window", command=_open_popout, font=_ui_font(1)).pack(side="left", padx=(6, 0))
-    tk.Checkbutton(buttons, text="Pause Chat", variable=_freeze_var, font=_ui_font(1)).pack(side="left", padx=(6, 0))
-    tk.Button(buttons, text="Settings", command=_open_settings, font=_ui_font(1)).pack(side="right")
-
+    _main_text = text
     _register_view(text)
 
     if theme is not None:
@@ -1446,6 +1848,11 @@ def plugin_app(parent: tk.Frame) -> tk.Frame:
         _main_frame.after(600, _style_chat_texts)
     except Exception:
         pass
+
+    # Explain the new click controls for a few seconds, then show the saved
+    # chat log. Live messages still arrive (and display) in the meantime.
+    _snapshot_chat_log()
+    _show_startup_hint()
 
     return _main_frame
 
@@ -1496,6 +1903,15 @@ def plugin_prefs(parent: nb.Notebook, cmdr: str, is_beta: bool) -> Optional[tk.F
         text="Show message origin (e.g. [Local], [System], \u2026)",
         variable=_origin_var,
         command=_on_origins_change,
+    ).grid(row=row, column=0, columnspan=4, sticky="w", pady=(0, 8))
+    row += 1
+
+    chat_logging_var = tk.BooleanVar(value=_chat_logging_enabled())
+    _prefs_vars["chat_logging"] = chat_logging_var
+    nb.Checkbutton(
+        frame,
+        text="Chat logging (keep the chat history in a log file)",
+        variable=chat_logging_var,
     ).grid(row=row, column=0, columnspan=4, sticky="w", pady=(0, 8))
     row += 1
 
@@ -1567,6 +1983,9 @@ def plugin_prefs(parent: nb.Notebook, cmdr: str, is_beta: bool) -> Optional[tk.F
 def prefs_changed(cmdr: str, is_beta: bool) -> None:
     try:
         config.set(f"{CONFIG_PREFIX}_overlay", bool(_prefs_vars["overlay"].get()))
+        chat_var = _prefs_vars.get("chat_logging")
+        if chat_var is not None:
+            _set_chat_logging(bool(chat_var.get()))
         for channel in CHANNELS:
             var = _prefs_vars.get(f"notify_{channel}")
             if var is not None:
@@ -1600,6 +2019,8 @@ def _to_int(value: Any, default: int) -> int:
 # --------------------------------------------------------------------------- #
 def plugin_start3(plugin_dir: str) -> str:
     logger.info("%s v%s loaded", PLUGIN_DISPLAY_NAME, __version__)
+    # Read the saved chat log before any live message can be appended to it.
+    _snapshot_chat_log()
     return PLUGIN_INTERNAL_NAME
 
 
