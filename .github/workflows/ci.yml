@@ -51,3 +51,18 @@ jobs:
         run: |
           python -m pip install --quiet "ruff==0.17.1"
           ruff check --select E9,F --output-format github .
+
+  runtime:
+    name: Runtime test on Linux
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v7
+
+      - name: Install Tk and a virtual display
+        run: |
+          sudo apt-get update -qq
+          sudo apt-get install -y -qq python3-tk xvfb
+
+      - name: Run headless runtime test
+        run: xvfb-run -a /usr/bin/python3 tests/test_runtime.py
