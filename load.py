@@ -20,12 +20,11 @@ import logging
 import os
 import sys
 import time
-from datetime import datetime, timezone
-from typing import Any, Dict, List, Optional
-
 import tkinter as tk
-from tkinter import ttk
+from datetime import datetime, timezone
 from tkinter import font as tkfont
+from tkinter import ttk
+from typing import Any
 
 import myNotebook as nb
 from config import appname, config
@@ -153,27 +152,27 @@ CHAT_LOG_FILENAME = "SaltyChat.log"
 # --------------------------------------------------------------------------- #
 # Runtime state
 # --------------------------------------------------------------------------- #
-_messages: List[Dict[str, Any]] = []
+_messages: list[dict[str, Any]] = []
 
-_main_frame: Optional[tk.Frame] = None
-_main_text: Optional[tk.Text] = None
-_filter_vars: Dict[str, tk.BooleanVar] = {}
-_timestamp_var: Optional[tk.BooleanVar] = None
-_origin_var: Optional[tk.BooleanVar] = None
-_freeze_var: Optional[tk.BooleanVar] = None
-_topmost_var: Optional[tk.BooleanVar] = None
-_views: List[tk.Text] = []
-_popout: Optional[tk.Toplevel] = None
-_settings_win: Optional[tk.Toplevel] = None
+_main_frame: tk.Frame | None = None
+_main_text: tk.Text | None = None
+_filter_vars: dict[str, tk.BooleanVar] = {}
+_timestamp_var: tk.BooleanVar | None = None
+_origin_var: tk.BooleanVar | None = None
+_freeze_var: tk.BooleanVar | None = None
+_topmost_var: tk.BooleanVar | None = None
+_views: list[tk.Text] = []
+_popout: tk.Toplevel | None = None
+_settings_win: tk.Toplevel | None = None
 
-_prefs_vars: Dict[str, Any] = {}
+_prefs_vars: dict[str, Any] = {}
 
 # Main-widget single/double click arbitration.
-_pending_click: Optional[str] = None
+_pending_click: str | None = None
 _suppress_until = 0.0
 
 # Saved chat log waiting to be shown once the startup hint has been displayed.
-_history_pending: List[Dict[str, Any]] = []
+_history_pending: list[dict[str, Any]] = []
 _history_snapshot_taken = False
 _history_flushed = False
 _hint_started = False
@@ -183,7 +182,7 @@ _hint_shown = False
 _overlay_send = None
 _overlay_import_done = False
 _overlay_group_registered = False
-_overlay_active: List[Dict[str, Any]] = []
+_overlay_active: list[dict[str, Any]] = []
 _overlay_seq = 0
 
 
@@ -272,13 +271,17 @@ def _ensure_filter_vars() -> None:
                 value=_cfg_bool(_show_key(channel), DEFAULT_SHOW.get(channel, True))
             )
     if _timestamp_var is None:
-        _timestamp_var = tk.BooleanVar(value=_cfg_bool(_timestamp_key(), DEFAULT_TIMESTAMPS))
+        _timestamp_var = tk.BooleanVar(
+            value=_cfg_bool(_timestamp_key(), DEFAULT_TIMESTAMPS)
+        )
     if _origin_var is None:
         _origin_var = tk.BooleanVar(value=_cfg_bool(_origin_key(), DEFAULT_ORIGINS))
     if _freeze_var is None:
         _freeze_var = tk.BooleanVar(value=False)
     if _topmost_var is None:
-        _topmost_var = tk.BooleanVar(value=_cfg_bool(_stay_on_top_key(), DEFAULT_STAY_ON_TOP))
+        _topmost_var = tk.BooleanVar(
+            value=_cfg_bool(_stay_on_top_key(), DEFAULT_STAY_ON_TOP)
+        )
 
 
 def _timestamps_shown() -> bool:
@@ -331,16 +334,16 @@ def _overlay_visible_size() -> tuple:
     else:
         visible_w = base_h * screen_ratio
         visible_h = float(base_h)
-    visible_w = max(1, min(base_w, int(round(visible_w))))
-    visible_h = max(1, min(base_h, int(round(visible_h))))
+    visible_w = max(1, min(base_w, round(visible_w)))
+    visible_h = max(1, min(base_h, round(visible_h)))
     return visible_w, visible_h
 
 
 def _overlay_default_pos() -> tuple:
     """Default overlay anchor: left side, 30% down the visible overlay canvas."""
     visible_w, visible_h = _overlay_visible_size()
-    x = max(8, int(round(visible_w * 0.02)))
-    y = max(8, int(round(visible_h * 0.30)))
+    x = max(8, round(visible_w * 0.02))
+    y = max(8, round(visible_h * 0.30))
     return x, y
 
 
@@ -388,8 +391,10 @@ def _chat_log_dir() -> str:
     fallback = None
     for name in (None, str(appname)):
         try:
-            handlers = list(logging.getLogger(name).handlers) if name else list(
-                logging.getLogger().handlers
+            handlers = (
+                list(logging.getLogger(name).handlers)
+                if name
+                else list(logging.getLogger().handlers)
             )
         except Exception:
             handlers = []
@@ -425,7 +430,7 @@ def _sanitise_field(value: Any) -> str:
     return str(value).replace("\t", " ").replace("\r", " ").replace("\n", " ")
 
 
-def _write_chat_log(item: Dict[str, Any]) -> None:
+def _write_chat_log(item: dict[str, Any]) -> None:
     line = "\t".join(
         (
             _sanitise_field(item.get("time", "")),
@@ -441,9 +446,9 @@ def _write_chat_log(item: Dict[str, Any]) -> None:
         logger.exception("Failed to append to the Salty chat log")
 
 
-def _read_chat_log() -> List[Dict[str, Any]]:
+def _read_chat_log() -> list[dict[str, Any]]:
     path = _chat_log_path()
-    items: List[Dict[str, Any]] = []
+    items: list[dict[str, Any]] = []
     if not os.path.isfile(path):
         return items
     with open(path, "r", encoding="utf-8", errors="replace") as handle:
@@ -519,7 +524,7 @@ def _set_chat_logging(enabled: bool) -> None:
 # --------------------------------------------------------------------------- #
 # Toplevel windows
 # --------------------------------------------------------------------------- #
-def _dialog_master(preferred: Optional[tk.Misc] = None) -> Optional[tk.Misc]:
+def _dialog_master(preferred: tk.Misc | None = None) -> tk.Misc | None:
     """Pick the master for a Salty toplevel window.
 
     EDMC's ``theme.register`` recursively walks plugin frames and raises
@@ -549,7 +554,7 @@ def _show_startup_hint() -> None:
     floating window, so it always appears exactly where the click controls it
     describes actually are.
     """
-    global _hint_started, _hint_shown
+    global _hint_started
 
     if _hint_started:
         return
@@ -587,7 +592,7 @@ def _show_startup_hint() -> None:
         _finish()
         return
 
-    state: Dict[str, Any] = {"timer": None, "poll": None, "dismissed": False}
+    state: dict[str, Any] = {"timer": None, "poll": None, "dismissed": False}
 
     def _dismiss() -> None:
         if state["dismissed"]:
@@ -657,7 +662,9 @@ def _on_chat_click(event: tk.Event) -> str:
     if time.monotonic() < _suppress_until:
         return "break"
     try:
-        _pending_click = event.widget.after(CLICK_ACTION_DELAY_MS, _open_popout_deferred)
+        _pending_click = event.widget.after(
+            CLICK_ACTION_DELAY_MS, _open_popout_deferred
+        )
     except Exception:
         _open_popout()
     return "break"
@@ -704,7 +711,7 @@ def _on_chat_menu(event: tk.Event) -> str:
 # --------------------------------------------------------------------------- #
 # Channel mapping
 # --------------------------------------------------------------------------- #
-def _normalise_channel(raw: Optional[str]) -> str:
+def _normalise_channel(raw: str | None) -> str:
     """Map an Elite Dangerous channel token onto one of our buckets."""
     token = (raw or "").strip().lower()
     if token in ("starsystem", "system"):
@@ -715,8 +722,12 @@ def _normalise_channel(raw: Optional[str]) -> str:
         return "wing"
     if token == "squadron":
         return "squadron"
-    if token in ("squadleaders", "squadron leaders", "squadron_leaders",
-                 "squadronleaders"):
+    if token in (
+        "squadleaders",
+        "squadron leaders",
+        "squadron_leaders",
+        "squadronleaders",
+    ):
         return "squadleaders"
     if token == "npc":
         return "npc"
@@ -724,7 +735,7 @@ def _normalise_channel(raw: Optional[str]) -> str:
     return "private"
 
 
-def _event_time(entry: Dict[str, Any]) -> str:
+def _event_time(entry: dict[str, Any]) -> str:
     raw = entry.get("timestamp")
     if isinstance(raw, str) and raw:
         for fmt in ("%Y-%m-%dT%H:%M:%SZ", "%Y-%m-%dT%H:%M:%S.%fZ"):
@@ -743,6 +754,7 @@ def _import_edmcoverlay():
     """Best-effort import of the Modern Overlay legacy compatibility facade."""
     try:
         from EDMCOverlay import edmcoverlay  # type: ignore
+
         return edmcoverlay
     except Exception:
         pass
@@ -753,12 +765,14 @@ def _import_edmcoverlay():
         if os.path.isdir(overlay_dir) and overlay_dir not in sys.path:
             sys.path.append(overlay_dir)
         from EDMCOverlay import edmcoverlay  # type: ignore
+
         return edmcoverlay
     except Exception:
         pass
 
     try:
         from edmcoverlay import edmcoverlay  # type: ignore
+
         return edmcoverlay
     except Exception:
         return None
@@ -777,7 +791,9 @@ def _get_overlay_send():
 
     send = getattr(module, "send_overlay_message", None)
     if send is None:
-        logger.info("Modern Overlay has no send_overlay_message; notifications unavailable")
+        logger.info(
+            "Modern Overlay has no send_overlay_message; notifications unavailable"
+        )
         return None
 
     _overlay_send = send
@@ -819,15 +835,17 @@ def _ensure_overlay_group() -> None:
 def _toast_clear(send, overlay_id: str) -> None:
     """Tell the overlay to remove a single notification immediately."""
     try:
-        send({
-            "event": "LegacyOverlay",
-            "type": "message",
-            "id": overlay_id,
-            "text": "",
-            "ttl": 0,
-            "x": 0,
-            "y": 0,
-        })
+        send(
+            {
+                "event": "LegacyOverlay",
+                "type": "message",
+                "id": overlay_id,
+                "text": "",
+                "ttl": 0,
+                "x": 0,
+                "y": 0,
+            }
+        )
     except Exception:
         pass
 
@@ -866,13 +884,16 @@ def _notify(channel: str, sender: str, message: str) -> None:
         _toast_clear(send, _overlay_active.pop()["id"])
 
     # Newest notification goes on top; older ones are pushed down.
-    _overlay_active.insert(0, {
-        "id": f"{NOTIFY_ID_PREFIX}{channel}-{_overlay_seq}",
-        "text": f"{sender}: {message}",
-        "color": CHANNEL_COLORS.get(channel, "#ffffff"),
-        "size": size,
-        "expire": now + ttl,
-    })
+    _overlay_active.insert(
+        0,
+        {
+            "id": f"{NOTIFY_ID_PREFIX}{channel}-{_overlay_seq}",
+            "text": f"{sender}: {message}",
+            "color": CHANNEL_COLORS.get(channel, "#ffffff"),
+            "size": size,
+            "expire": now + ttl,
+        },
+    )
 
     # Nudge the column back on screen if the current stack would overflow. The
     # configured anchor is preserved, so a single message stays where it was
@@ -881,7 +902,7 @@ def _notify(channel: str, sender: str, message: str) -> None:
 
     # Re-emit every active notification so they stack without overlapping.
     for index, entry in enumerate(_overlay_active):
-        remaining = max(1, int(round(entry["expire"] - now)))
+        remaining = max(1, round(entry["expire"] - now))
         payload = {
             "event": "LegacyOverlay",
             "type": "message",
@@ -910,9 +931,9 @@ def _notify(channel: str, sender: str, message: str) -> None:
 # --------------------------------------------------------------------------- #
 # Message store / rendering
 # --------------------------------------------------------------------------- #
-def _format_prefix(item: Dict[str, Any]) -> str:
+def _format_prefix(item: dict[str, Any]) -> str:
     label = CHANNEL_LABELS.get(item["channel"], item["channel"])
-    bits: List[str] = []
+    bits: list[str] = []
     if _timestamps_shown():
         bits.append(f"[{item['time']}]")
     if _origins_shown():
@@ -930,7 +951,7 @@ def _trim(text: tk.Text) -> None:
         pass
 
 
-def _append_item(text: tk.Text, item: Dict[str, Any]) -> None:
+def _append_item(text: tk.Text, item: dict[str, Any]) -> None:
     text.configure(state="normal")
     try:
         text.insert("end", _format_prefix(item), (f"ch_{item['channel']}",))
@@ -951,7 +972,9 @@ def _render_all(text: tk.Text) -> None:
             _append_item(text, item)
 
 
-def _add_message(channel: str, sender: str, message: str, incoming: bool, entry: Dict[str, Any]) -> None:
+def _add_message(
+    channel: str, sender: str, message: str, incoming: bool, entry: dict[str, Any]
+) -> None:
     item = {
         "time": _event_time(entry),
         "channel": channel,
@@ -967,7 +990,7 @@ def _add_message(channel: str, sender: str, message: str, incoming: bool, entry:
         _write_chat_log(item)
 
     if _channel_shown(channel):
-        for text in list(_views):
+        for text in _views:
             try:
                 _append_item(text, item)
             except Exception:
@@ -978,7 +1001,7 @@ def _add_message(channel: str, sender: str, message: str, incoming: bool, entry:
 
 
 def _rerender_views() -> None:
-    for text in list(_views):
+    for text in _views:
         try:
             _render_all(text)
         except Exception:
@@ -1000,8 +1023,15 @@ def _themed_confirm(parent: tk.Misc, message: str) -> bool:
     result = {"value": False}
 
     label = tk.Label(
-        dlg, text=message, background=bg, foreground=fg,
-        font=_ui_font(0), padx=24, pady=18, anchor="w", justify="left",
+        dlg,
+        text=message,
+        background=bg,
+        foreground=fg,
+        font=_ui_font(0),
+        padx=24,
+        pady=18,
+        anchor="w",
+        justify="left",
     )
     label.pack(fill="x")
 
@@ -1021,9 +1051,17 @@ def _themed_confirm(parent: tk.Misc, message: str) -> bool:
 
     def _mk(text: str, value: bool) -> tk.Button:
         return tk.Button(
-            btns, text=text, width=10, command=lambda: _choose(value),
-            background=bg, foreground=fg, activebackground=bg, activeforeground=fg,
-            highlightthickness=0, highlightbackground=bg, font=_ui_font(0),
+            btns,
+            text=text,
+            width=10,
+            command=lambda: _choose(value),
+            background=bg,
+            foreground=fg,
+            activebackground=bg,
+            activeforeground=fg,
+            highlightthickness=0,
+            highlightbackground=bg,
+            font=_ui_font(0),
         )
 
     no = _mk("No", False)
@@ -1039,7 +1077,9 @@ def _themed_confirm(parent: tk.Misc, message: str) -> bool:
         dlg.update_idletasks()
         if parent is not None:
             px = parent.winfo_rootx() + (parent.winfo_width() - dlg.winfo_width()) // 2
-            py = parent.winfo_rooty() + (parent.winfo_height() - dlg.winfo_height()) // 2
+            py = (
+                parent.winfo_rooty() + (parent.winfo_height() - dlg.winfo_height()) // 2
+            )
             dlg.geometry(f"+{max(0, px)}+{max(0, py)}")
     except Exception:
         pass
@@ -1078,7 +1118,7 @@ def _clear_messages() -> None:
     if not _confirm_clear():
         return
     _messages.clear()
-    for text in list(_views):
+    for text in _views:
         try:
             text.configure(state="normal")
             text.delete("1.0", "end")
@@ -1115,8 +1155,15 @@ class ThemedScrollbar(tk.Canvas):
     a ``tk.Canvas`` (which is fully colourable).
     """
 
-    def __init__(self, master, command=None, background="grey4",
-                 foreground="#ff8000", width=14, **kw):
+    def __init__(
+        self,
+        master,
+        command=None,
+        background="grey4",
+        foreground="#ff8000",
+        width=14,
+        **kw,
+    ):
         kw.setdefault("highlightthickness", 0)
         kw.setdefault("bd", 0)
         # A Canvas defaults to ~265px tall, which would force the whole chat row
@@ -1176,7 +1223,9 @@ class ThemedScrollbar(tk.Canvas):
         self._top = top
         self._bottom = bottom
         color = self._thumb_active if self._drag else self._thumb
-        self.create_rectangle(2, top + 1, w - 2, bottom - 1, fill=color, outline="", tags="thumb")
+        self.create_rectangle(
+            2, top + 1, w - 2, bottom - 1, fill=color, outline="", tags="thumb"
+        )
 
     def _on_press(self, event) -> None:
         h = self.winfo_height() or 1
@@ -1256,21 +1305,25 @@ def _theme_titlebar(window: tk.Widget) -> None:
         return
     try:
         import ctypes
+
         handle = window.winfo_id()
         user32 = ctypes.windll.user32
         hwnd = user32.GetAncestor(handle, 2) or handle
         dark = ctypes.c_int(1)
         ctypes.windll.dwmapi.DwmSetWindowAttribute(
-            hwnd, 20, ctypes.byref(dark), ctypes.sizeof(dark))
+            hwnd, 20, ctypes.byref(dark), ctypes.sizeof(dark)
+        )
         bg, fg = _theme_colors()
         if bg:
             value = ctypes.c_uint(_colorref(window, bg))
             ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                hwnd, 35, ctypes.byref(value), ctypes.sizeof(value))
+                hwnd, 35, ctypes.byref(value), ctypes.sizeof(value)
+            )
         if fg:
             value = ctypes.c_uint(_colorref(window, fg))
             ctypes.windll.dwmapi.DwmSetWindowAttribute(
-                hwnd, 36, ctypes.byref(value), ctypes.sizeof(value))
+                hwnd, 36, ctypes.byref(value), ctypes.sizeof(value)
+            )
     except Exception:
         pass
 
@@ -1283,7 +1336,7 @@ def _set_always_on_top(window: tk.Widget, enabled: bool) -> None:
         pass
 
 
-def _apply_stay_on_top(window: Optional[tk.Toplevel]) -> None:
+def _apply_stay_on_top(window: tk.Toplevel | None) -> None:
     """Apply the saved stay-on-top preference to a Salty toplevel."""
     if window is None:
         return
@@ -1411,7 +1464,7 @@ def _style_chat_texts() -> None:
         except Exception:
             pass
 
-    for text in list(_views):
+    for text in _views:
         try:
             text.configure(background=bg, foreground=fg, insertbackground=fg)
         except Exception:
@@ -1493,60 +1546,84 @@ def _on_origins_change() -> None:
     _rerender_views()
 
 
-def _make_toggle_checks(parent: tk.Widget, include_timestamp: bool,
-                        include_origin: bool, font_delta: int) -> List[tk.Checkbutton]:
+def _make_toggle_checks(
+    parent: tk.Widget, include_timestamp: bool, include_origin: bool, font_delta: int
+) -> list[tk.Checkbutton]:
     """Create the channel (and optional timestamp/origin) checkboxes."""
     _ensure_filter_vars()
-    checks: List[tk.Checkbutton] = []
+    checks: list[tk.Checkbutton] = []
     for channel in CHANNELS:
-        checks.append(tk.Checkbutton(
-            parent,
-            text=CHANNEL_LABELS[channel],
-            variable=_filter_vars[channel],
-            command=_on_filter_change,
-            font=_ui_font(font_delta),
-            anchor="w",
-        ))
+        checks.append(
+            tk.Checkbutton(
+                parent,
+                text=CHANNEL_LABELS[channel],
+                variable=_filter_vars[channel],
+                command=_on_filter_change,
+                font=_ui_font(font_delta),
+                anchor="w",
+            )
+        )
     if include_timestamp:
-        checks.append(tk.Checkbutton(
-            parent,
-            text="Time",
-            variable=_timestamp_var,
-            command=_on_timestamps_change,
-            font=_ui_font(font_delta),
-            anchor="w",
-        ))
+        checks.append(
+            tk.Checkbutton(
+                parent,
+                text="Time",
+                variable=_timestamp_var,
+                command=_on_timestamps_change,
+                font=_ui_font(font_delta),
+                anchor="w",
+            )
+        )
     if include_origin:
-        checks.append(tk.Checkbutton(
-            parent,
-            text="Origin",
-            variable=_origin_var,
-            command=_on_origins_change,
-            font=_ui_font(font_delta),
-            anchor="w",
-        ))
+        checks.append(
+            tk.Checkbutton(
+                parent,
+                text="Origin",
+                variable=_origin_var,
+                command=_on_origins_change,
+                font=_ui_font(font_delta),
+                anchor="w",
+            )
+        )
     return checks
 
 
-def _build_toggle_grid(parent: tk.Widget, *, include_timestamp: bool = False,
-                       include_origin: bool = False, columns: int = 3,
-                       font_delta: int = 0, padx: int = 6,
-                       pady: int = 2) -> List[tk.Checkbutton]:
+def _build_toggle_grid(
+    parent: tk.Widget,
+    *,
+    include_timestamp: bool = False,
+    include_origin: bool = False,
+    columns: int = 3,
+    font_delta: int = 0,
+    padx: int = 6,
+    pady: int = 2,
+) -> list[tk.Checkbutton]:
     """Lay the checkboxes out in a fixed grid (deterministic size, no reflow)."""
     checks = _make_toggle_checks(parent, include_timestamp, include_origin, font_delta)
     for index, check in enumerate(checks):
-        check.grid(row=index // columns, column=index % columns,
-                   sticky="w", padx=padx, pady=pady)
+        check.grid(
+            row=index // columns,
+            column=index % columns,
+            sticky="w",
+            padx=padx,
+            pady=pady,
+        )
     return checks
 
 
-def _build_toggle_strip(parent: tk.Widget, *, include_timestamp: bool = False,
-                        include_origin: bool = False, font_delta: int = 1,
-                        padx: int = 6, pady: int = 2) -> List[tk.Checkbutton]:
+def _build_toggle_strip(
+    parent: tk.Widget,
+    *,
+    include_timestamp: bool = False,
+    include_origin: bool = False,
+    font_delta: int = 1,
+    padx: int = 6,
+    pady: int = 2,
+) -> list[tk.Checkbutton]:
     """Create the channel (and optional timestamp/origin) checkboxes, reflowing to fit."""
     checks = _make_toggle_checks(parent, include_timestamp, include_origin, font_delta)
 
-    state: Dict[str, Any] = {"sig": None}
+    state: dict[str, Any] = {"sig": None}
 
     def _layout(_event=None) -> None:
         try:
@@ -1587,9 +1664,15 @@ def _build_toggle_strip(parent: tk.Widget, *, include_timestamp: bool = False,
 def _save_overlay_settings(overlay_var, x_var, y_var, ttl_var, size_var) -> None:
     try:
         config.set(f"{CONFIG_PREFIX}_overlay", bool(overlay_var.get()))
-        config.set(f"{CONFIG_PREFIX}_overlay_x", _to_int(x_var.get(), DEFAULT_OVERLAY_X))
-        config.set(f"{CONFIG_PREFIX}_overlay_y", _to_int(y_var.get(), DEFAULT_OVERLAY_Y))
-        config.set(f"{CONFIG_PREFIX}_overlay_ttl", _to_int(ttl_var.get(), DEFAULT_OVERLAY_TTL))
+        config.set(
+            f"{CONFIG_PREFIX}_overlay_x", _to_int(x_var.get(), DEFAULT_OVERLAY_X)
+        )
+        config.set(
+            f"{CONFIG_PREFIX}_overlay_y", _to_int(y_var.get(), DEFAULT_OVERLAY_Y)
+        )
+        config.set(
+            f"{CONFIG_PREFIX}_overlay_ttl", _to_int(ttl_var.get(), DEFAULT_OVERLAY_TTL)
+        )
         size = size_var.get()
         config.set(
             f"{CONFIG_PREFIX}_overlay_size",
@@ -1647,18 +1730,25 @@ def _open_settings() -> None:
     body = tk.Frame(dlg, background=bg)
     body.pack(fill="both", expand=True, padx=14, pady=12)
 
-    tk.Label(body, text="Show messages in:", background=bg, foreground=fg,
-             font=_ui_font(0)).pack(anchor="w")
+    tk.Label(
+        body, text="Show messages in:", background=bg, foreground=fg, font=_ui_font(0)
+    ).pack(anchor="w")
     strip = tk.Frame(body, background=bg)
     strip.pack(fill="x", pady=(2, 8))
     _build_toggle_grid(strip, include_timestamp=True, include_origin=True, font_delta=0)
 
-    overlay_var = tk.BooleanVar(value=_cfg_bool(f"{CONFIG_PREFIX}_overlay", DEFAULT_OVERLAY_ENABLED))
+    overlay_var = tk.BooleanVar(
+        value=_cfg_bool(f"{CONFIG_PREFIX}_overlay", DEFAULT_OVERLAY_ENABLED)
+    )
     cfg_x, cfg_y = _overlay_pos_from_cfg()
     x_var = tk.StringVar(value=str(cfg_x))
     y_var = tk.StringVar(value=str(cfg_y))
-    ttl_var = tk.StringVar(value=str(_cfg_int(f"{CONFIG_PREFIX}_overlay_ttl", DEFAULT_OVERLAY_TTL)))
-    size_var = tk.StringVar(value=_cfg_str(f"{CONFIG_PREFIX}_overlay_size", DEFAULT_OVERLAY_SIZE))
+    ttl_var = tk.StringVar(
+        value=str(_cfg_int(f"{CONFIG_PREFIX}_overlay_ttl", DEFAULT_OVERLAY_TTL))
+    )
+    size_var = tk.StringVar(
+        value=_cfg_str(f"{CONFIG_PREFIX}_overlay_size", DEFAULT_OVERLAY_SIZE)
+    )
     if size_var.get() not in OVERLAY_SIZES:
         size_var.set(DEFAULT_OVERLAY_SIZE)
 
@@ -1666,8 +1756,15 @@ def _open_settings() -> None:
         body,
         text="On-screen notifications (requires Modern Overlay)",
         variable=overlay_var,
-        background=bg, foreground=fg, activebackground=bg, activeforeground=fg,
-        selectcolor=bg, highlightthickness=0, bd=0, font=_ui_font(0), anchor="w",
+        background=bg,
+        foreground=fg,
+        activebackground=bg,
+        activeforeground=fg,
+        selectcolor=bg,
+        highlightthickness=0,
+        bd=0,
+        font=_ui_font(0),
+        anchor="w",
     ).pack(anchor="w", pady=(0, 8))
 
     chat_var = tk.BooleanVar(value=_chat_logging_enabled())
@@ -1675,8 +1772,15 @@ def _open_settings() -> None:
         body,
         text="Chat logging (keep the chat history in a log file)",
         variable=chat_var,
-        background=bg, foreground=fg, activebackground=bg, activeforeground=fg,
-        selectcolor=bg, highlightthickness=0, bd=0, font=_ui_font(0), anchor="w",
+        background=bg,
+        foreground=fg,
+        activebackground=bg,
+        activeforeground=fg,
+        selectcolor=bg,
+        highlightthickness=0,
+        bd=0,
+        font=_ui_font(0),
+        anchor="w",
     ).pack(anchor="w", pady=(0, 8))
 
     _ensure_filter_vars()
@@ -1686,22 +1790,37 @@ def _open_settings() -> None:
         text="Stay on top of the game",
         variable=_topmost_var,
         command=_toggle_stay_on_top,
-        background=bg, foreground=fg, activebackground=bg, activeforeground=fg,
-        selectcolor=bg, highlightthickness=0, bd=0, font=_ui_font(0), anchor="w",
+        background=bg,
+        foreground=fg,
+        activebackground=bg,
+        activeforeground=fg,
+        selectcolor=bg,
+        highlightthickness=0,
+        bd=0,
+        font=_ui_font(0),
+        anchor="w",
     ).pack(anchor="w", pady=(0, 8))
 
     grid = tk.Frame(body, background=bg)
     grid.pack(fill="x")
 
     def _label(text: str, row: int, col: int) -> None:
-        tk.Label(grid, text=text, background=bg, foreground=fg,
-                 font=_ui_font(0)).grid(row=row, column=col, sticky="w", pady=2)
+        tk.Label(grid, text=text, background=bg, foreground=fg, font=_ui_font(0)).grid(
+            row=row, column=col, sticky="w", pady=2
+        )
 
     def _entry(var: tk.StringVar, row: int, col: int) -> None:
-        tk.Entry(grid, textvariable=var, width=6, justify="right",
-                 background=bg, foreground=fg, insertbackground=fg,
-                 highlightthickness=0, bd=1).grid(row=row, column=col, sticky="w",
-                                                  padx=(4, 14), pady=2)
+        tk.Entry(
+            grid,
+            textvariable=var,
+            width=6,
+            justify="right",
+            background=bg,
+            foreground=fg,
+            insertbackground=fg,
+            highlightthickness=0,
+            bd=1,
+        ).grid(row=row, column=col, sticky="w", padx=(4, 14), pady=2)
 
     _label("Position X:", 0, 0)
     _entry(x_var, 0, 1)
@@ -1711,11 +1830,24 @@ def _open_settings() -> None:
     _entry(ttl_var, 1, 1)
     _label("Size:", 1, 2)
     size_menu = tk.OptionMenu(grid, size_var, *OVERLAY_SIZES)
-    size_menu.configure(background=bg, foreground=fg, activebackground=bg,
-                        activeforeground=fg, highlightthickness=0, bd=1, width=6,
-                        anchor="w", font=_ui_font(0))
-    size_menu["menu"].configure(background=bg, foreground=fg,
-                                activebackground=fg, activeforeground=bg, borderwidth=0)
+    size_menu.configure(
+        background=bg,
+        foreground=fg,
+        activebackground=bg,
+        activeforeground=fg,
+        highlightthickness=0,
+        bd=1,
+        width=6,
+        anchor="w",
+        font=_ui_font(0),
+    )
+    size_menu["menu"].configure(
+        background=bg,
+        foreground=fg,
+        activebackground=fg,
+        activeforeground=bg,
+        borderwidth=0,
+    )
     size_menu.grid(row=1, column=3, sticky="w", padx=(4, 0), pady=2)
 
     btns = tk.Frame(body, background=bg)
@@ -1731,9 +1863,18 @@ def _open_settings() -> None:
             pass
         _settings_win = None
 
-    tk.Button(btns, text="Close", width=10, command=_close, background=bg, foreground=fg,
-              activebackground=bg, activeforeground=fg, highlightthickness=0,
-              font=_ui_font(0)).pack(side="right")
+    tk.Button(
+        btns,
+        text="Close",
+        width=10,
+        command=_close,
+        background=bg,
+        foreground=fg,
+        activebackground=bg,
+        activeforeground=fg,
+        highlightthickness=0,
+        font=_ui_font(0),
+    ).pack(side="right")
 
     dlg.protocol("WM_DELETE_WINDOW", _close)
     dlg.bind("<Escape>", lambda _e: _close())
@@ -1824,20 +1965,31 @@ def _open_popout() -> None:
     # chat area absorbs whatever space is left.
     bottom = tk.Frame(_popout)
     bottom.pack(side="bottom", fill="x", padx=4, pady=(0, 4))
-    tk.Button(bottom, text="Clear", command=_clear_messages, font=_ui_font(1)).pack(side="left")
-    freeze = tk.Checkbutton(bottom, text="Pause Chat", variable=_freeze_var, font=_ui_font(1))
+    tk.Button(bottom, text="Clear", command=_clear_messages, font=_ui_font(1)).pack(
+        side="left"
+    )
+    freeze = tk.Checkbutton(
+        bottom, text="Pause Chat", variable=_freeze_var, font=_ui_font(1)
+    )
     freeze.pack(side="left", padx=(8, 0))
     _ensure_filter_vars()
     _topmost_var.set(_cfg_bool(_stay_on_top_key(), DEFAULT_STAY_ON_TOP))
-    topmost = tk.Checkbutton(bottom, text="Stay on top", variable=_topmost_var,
-                             command=_toggle_stay_on_top, font=_ui_font(1))
+    topmost = tk.Checkbutton(
+        bottom,
+        text="Stay on top",
+        variable=_topmost_var,
+        command=_toggle_stay_on_top,
+        font=_ui_font(1),
+    )
     topmost.pack(side="left", padx=(8, 0))
 
     # Channel + timestamp toggles, tucked just above the bottom controls so they
     # are always reachable (packed bottom-up, after the controls row).
     toggles = tk.Frame(_popout)
     toggles.pack(side="bottom", fill="x", padx=4, pady=(0, 2))
-    _build_toggle_strip(toggles, include_timestamp=True, include_origin=True, font_delta=1)
+    _build_toggle_strip(
+        toggles, include_timestamp=True, include_origin=True, font_delta=1
+    )
 
     container = tk.Frame(_popout)
     container.pack(fill="both", expand=True, padx=4, pady=4)
@@ -1850,7 +2002,9 @@ def _open_popout() -> None:
     # theme background, thumb in the theme accent); a classic native scrollbar
     # keeps its light thumb on Windows and cannot be recoloured reliably.
     text = tk.Text(container, wrap="word", state="disabled", height=16, width=64)
-    scroll = ThemedScrollbar(container, command=text.yview, background=bg, foreground=fg)
+    scroll = ThemedScrollbar(
+        container, command=text.yview, background=bg, foreground=fg
+    )
     scroll.pack(side="right", fill="y")
     text.pack(side="left", fill="both", expand=True)
     text.configure(yscrollcommand=scroll.set)
@@ -1898,7 +2052,9 @@ def plugin_app(parent: tk.Frame) -> tk.Frame:
     text = tk.Text(log_frame, wrap="word", state="disabled", height=4, width=34)
     text.pack(side="left", fill="both", expand=True)
     bg, fg = _theme_colors()
-    scroll = ThemedScrollbar(log_frame, command=text.yview, background=bg, foreground=fg)
+    scroll = ThemedScrollbar(
+        log_frame, command=text.yview, background=bg, foreground=fg
+    )
     scroll.pack(side="right", fill="y")
     text.configure(yscrollcommand=scroll.set)
     _tag_text(text)
@@ -1948,14 +2104,16 @@ def plugin_app(parent: tk.Frame) -> tk.Frame:
 # --------------------------------------------------------------------------- #
 # Settings tab
 # --------------------------------------------------------------------------- #
-def plugin_prefs(parent: nb.Notebook, cmdr: str, is_beta: bool) -> Optional[tk.Frame]:
+def plugin_prefs(parent: nb.Notebook, cmdr: str, is_beta: bool) -> tk.Frame | None:
     global _prefs_vars
 
     _prefs_vars = {}
     _ensure_filter_vars()
     frame = nb.Frame(parent)
 
-    nb.Label(frame, text=PLUGIN_DISPLAY_NAME).grid(row=0, column=0, columnspan=4, sticky="w")
+    nb.Label(frame, text=PLUGIN_DISPLAY_NAME).grid(
+        row=0, column=0, columnspan=4, sticky="w"
+    )
     nb.Label(
         frame,
         text="Records sent and received in-game chat and can show on-screen notifications.",
@@ -2003,7 +2161,9 @@ def plugin_prefs(parent: nb.Notebook, cmdr: str, is_beta: bool) -> Optional[tk.F
     ).grid(row=row, column=0, columnspan=4, sticky="w", pady=(0, 8))
     row += 1
 
-    overlay_var = tk.BooleanVar(value=_cfg_bool(f"{CONFIG_PREFIX}_overlay", DEFAULT_OVERLAY_ENABLED))
+    overlay_var = tk.BooleanVar(
+        value=_cfg_bool(f"{CONFIG_PREFIX}_overlay", DEFAULT_OVERLAY_ENABLED)
+    )
     _prefs_vars["overlay"] = overlay_var
     nb.Checkbutton(
         frame,
@@ -2018,7 +2178,9 @@ def plugin_prefs(parent: nb.Notebook, cmdr: str, is_beta: bool) -> Optional[tk.F
     row += 1
 
     for index, channel in enumerate(CHANNELS):
-        var = tk.BooleanVar(value=_cfg_bool(_notify_key(channel), DEFAULT_NOTIFY.get(channel, True)))
+        var = tk.BooleanVar(
+            value=_cfg_bool(_notify_key(channel), DEFAULT_NOTIFY.get(channel, True))
+        )
         _prefs_vars[f"notify_{channel}"] = var
         nb.Checkbutton(frame, text=CHANNEL_LABELS[channel], variable=var).grid(
             row=row + index // 3, column=index % 3, sticky="w"
@@ -2029,27 +2191,47 @@ def plugin_prefs(parent: nb.Notebook, cmdr: str, is_beta: bool) -> Optional[tk.F
 
     cfg_x, cfg_y = _overlay_pos_from_cfg()
 
-    nb.Label(frame, text="Overlay position X:").grid(row=base_row, column=0, sticky="w", pady=(8, 0))
+    nb.Label(frame, text="Overlay position X:").grid(
+        row=base_row, column=0, sticky="w", pady=(8, 0)
+    )
     x_var = tk.StringVar(value=str(cfg_x))
     _prefs_vars["overlay_x"] = x_var
-    nb.EntryMenu(frame, textvariable=x_var, width=6).grid(row=base_row, column=1, sticky="w", pady=(8, 0))
+    nb.EntryMenu(frame, textvariable=x_var, width=6).grid(
+        row=base_row, column=1, sticky="w", pady=(8, 0)
+    )
 
     nb.Label(frame, text="Y:").grid(row=base_row, column=2, sticky="e", pady=(8, 0))
     y_var = tk.StringVar(value=str(cfg_y))
     _prefs_vars["overlay_y"] = y_var
-    nb.EntryMenu(frame, textvariable=y_var, width=6).grid(row=base_row, column=3, sticky="w", pady=(8, 0))
+    nb.EntryMenu(frame, textvariable=y_var, width=6).grid(
+        row=base_row, column=3, sticky="w", pady=(8, 0)
+    )
 
-    nb.Label(frame, text="Display duration (s):").grid(row=base_row + 1, column=0, sticky="w")
-    ttl_var = tk.StringVar(value=str(_cfg_int(f"{CONFIG_PREFIX}_overlay_ttl", DEFAULT_OVERLAY_TTL)))
+    nb.Label(frame, text="Display duration (s):").grid(
+        row=base_row + 1, column=0, sticky="w"
+    )
+    ttl_var = tk.StringVar(
+        value=str(_cfg_int(f"{CONFIG_PREFIX}_overlay_ttl", DEFAULT_OVERLAY_TTL))
+    )
     _prefs_vars["overlay_ttl"] = ttl_var
-    nb.EntryMenu(frame, textvariable=ttl_var, width=6).grid(row=base_row + 1, column=1, sticky="w")
+    nb.EntryMenu(frame, textvariable=ttl_var, width=6).grid(
+        row=base_row + 1, column=1, sticky="w"
+    )
 
     nb.Label(frame, text="Text size:").grid(row=base_row + 1, column=2, sticky="e")
-    size_var = tk.StringVar(value=_cfg_str(f"{CONFIG_PREFIX}_overlay_size", DEFAULT_OVERLAY_SIZE))
+    size_var = tk.StringVar(
+        value=_cfg_str(f"{CONFIG_PREFIX}_overlay_size", DEFAULT_OVERLAY_SIZE)
+    )
     if size_var.get() not in OVERLAY_SIZES:
         size_var.set(DEFAULT_OVERLAY_SIZE)
     _prefs_vars["overlay_size"] = size_var
-    size_box = ttk.Combobox(frame, textvariable=size_var, values=list(OVERLAY_SIZES), width=7, state="readonly")
+    size_box = ttk.Combobox(
+        frame,
+        textvariable=size_var,
+        values=list(OVERLAY_SIZES),
+        width=7,
+        state="readonly",
+    )
     size_box.grid(row=base_row + 1, column=3, sticky="w")
 
     # Theme the ttk combobox drop-down list (its popup Listbox ignores ttk styling).
@@ -2078,9 +2260,18 @@ def prefs_changed(cmdr: str, is_beta: bool) -> None:
             var = _prefs_vars.get(f"notify_{channel}")
             if var is not None:
                 config.set(_notify_key(channel), bool(var.get()))
-        config.set(f"{CONFIG_PREFIX}_overlay_x", _to_int(_prefs_vars["overlay_x"].get(), DEFAULT_OVERLAY_X))
-        config.set(f"{CONFIG_PREFIX}_overlay_y", _to_int(_prefs_vars["overlay_y"].get(), DEFAULT_OVERLAY_Y))
-        config.set(f"{CONFIG_PREFIX}_overlay_ttl", _to_int(_prefs_vars["overlay_ttl"].get(), DEFAULT_OVERLAY_TTL))
+        config.set(
+            f"{CONFIG_PREFIX}_overlay_x",
+            _to_int(_prefs_vars["overlay_x"].get(), DEFAULT_OVERLAY_X),
+        )
+        config.set(
+            f"{CONFIG_PREFIX}_overlay_y",
+            _to_int(_prefs_vars["overlay_y"].get(), DEFAULT_OVERLAY_Y),
+        )
+        config.set(
+            f"{CONFIG_PREFIX}_overlay_ttl",
+            _to_int(_prefs_vars["overlay_ttl"].get(), DEFAULT_OVERLAY_TTL),
+        )
         size = _prefs_vars["overlay_size"].get()
         config.set(
             f"{CONFIG_PREFIX}_overlay_size",
@@ -2119,10 +2310,10 @@ def plugin_stop() -> None:
 def journal_entry(
     cmdr: str,
     is_beta: bool,
-    system: Optional[str],
-    station: Optional[str],
-    entry: Dict[str, Any],
-    state: Dict[str, Any],
+    system: str | None,
+    station: str | None,
+    entry: dict[str, Any],
+    state: dict[str, Any],
 ) -> None:
     event = entry.get("event")
 
@@ -2132,7 +2323,9 @@ def journal_entry(
     if event == "SendText":
         channel = _normalise_channel(entry.get("To_Localised") or entry.get("To"))
         sender = cmdr or "You"
-        _add_message(channel, sender, entry.get("Message", ""), incoming=False, entry=entry)
+        _add_message(
+            channel, sender, entry.get("Message", ""), incoming=False, entry=entry
+        )
 
     elif event == "ReceiveText":
         channel = _normalise_channel(entry.get("Channel"))
