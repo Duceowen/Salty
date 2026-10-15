@@ -61,13 +61,14 @@ if not logger.hasHandlers():
 # --------------------------------------------------------------------------- #
 CONFIG_PREFIX = "salty"
 
-CHANNELS = ("local", "system", "private", "wing", "squadron", "npc")
+CHANNELS = ("local", "system", "private", "wing", "squadron", "squadleaders", "npc")
 CHANNEL_LABELS = {
     "local": "Local",
     "system": "System",
     "private": "Private",
     "wing": "Wing",
     "squadron": "Squadron",
+    "squadleaders": "Squadron Leaders",
     "npc": "NPC",
 }
 CHANNEL_COLORS = {
@@ -76,6 +77,7 @@ CHANNEL_COLORS = {
     "private": "#ff7ad9",
     "wing": "#59a5ff",
     "squadron": "#35d07f",
+    "squadleaders": "#b388ff",
     "npc": "#ff9f43",
 }
 
@@ -85,6 +87,7 @@ DEFAULT_SHOW = {
     "private": True,
     "wing": True,
     "squadron": True,
+    "squadleaders": True,
     "npc": False,
 }
 DEFAULT_NOTIFY = {
@@ -93,6 +96,7 @@ DEFAULT_NOTIFY = {
     "private": True,
     "wing": True,
     "squadron": True,
+    "squadleaders": True,
     "npc": False,
 }
 
@@ -711,6 +715,9 @@ def _normalise_channel(raw: Optional[str]) -> str:
         return "wing"
     if token == "squadron":
         return "squadron"
+    if token in ("squadleaders", "squadron leaders", "squadron_leaders",
+                 "squadronleaders"):
+        return "squadleaders"
     if token == "npc":
         return "npc"
     # player / friend / voicechat / direct and anything unknown -> private
