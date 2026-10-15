@@ -77,7 +77,7 @@ for raw, want in {
 }.items():
     assert salty._normalise_channel(raw) == want, raw
 assert len(salty.CHANNELS) == 7
-assert salty.CHANNEL_LABELS["squadleaders"] == "Squadron Leaders"
+assert salty.CHANNEL_LABELS["squadleaders"] == "Officer"
 print("routing + registries OK")
 
 root = tk.Tk()
@@ -122,6 +122,41 @@ print("toggle UIs list all channels OK")
 salty._open_popout()
 root.update_idletasks()
 root.update()
+
+assert salty._popout_toggles is not None and salty._popout_toggles.winfo_ismapped()
+salty._open_settings()
+root.update_idletasks()
+root.update()
+
+
+def find_button(parent, text):
+    found = []
+
+    def rec(widget):
+        if widget.winfo_class() == "Button" and str(widget.cget("text")) == text:
+            found.append(widget)
+        for child in widget.winfo_children():
+            rec(child)
+
+    rec(parent)
+    return found
+
+
+hide_btns = find_button(salty._settings_win, "Hide Boxes")
+assert len(hide_btns) == 1, hide_btns
+hide_btns[0].invoke()
+root.update_idletasks()
+root.update()
+assert not salty._popout_toggles.winfo_ismapped()
+assert salty._boxes_hidden()
+assert find_button(salty._settings_win, "Show Boxes")
+show_btns = find_button(salty._settings_win, "Show Boxes")
+show_btns[0].invoke()
+root.update_idletasks()
+root.update()
+assert salty._popout_toggles.winfo_ismapped()
+assert not salty._boxes_hidden()
+print("Hide Boxes toggles the pop-out Show Messages row OK")
 container = next(
     w
     for w in salty._popout.winfo_children()

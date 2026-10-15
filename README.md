@@ -12,9 +12,10 @@ the [Modern Overlay](https://github.com/EDCD/EDMC-Plugin-Registry) plugin.
 
 - **Chat log** of all sent and received messages with optional timestamp and
   channel-origin label.
-- **Channel filters** for Local, System, Private, Wing, Squadron and NPC, plus
+- **Channel filters** for Local, System, Private, Wing, Squadron, Officer and NPC, plus
   **timestamp** and **origin** toggles. These live on the plugin's **Settings tab**
   and in the **pop-out window**, so the compact main-window widget stays clean.
+  **Hide Boxes** in Salty Settings removes that row from the pop-out.
 - **On-screen notifications** for incoming messages, per channel, delivered via Modern Overlay.
 - **Pop-out window** for a larger, resizable chat view with the full chat log and
   its own filter toggles.
@@ -38,6 +39,7 @@ Elite Dangerous uses several channel tokens; these are normalised as follows:
 | `starsystem`, `system`   | System               |
 | `wing`                   | Wing                 |
 | `squadron`               | Squadron             |
+| `squadleaders`           | Officer              |
 | `npc`                    | NPC                  |
 | everything else          | Private              |
 
@@ -82,10 +84,12 @@ Elite Dangerous uses several channel tokens; these are normalised as follows:
 - **Settings** – opens the themed Salty settings window (channel filters, timestamp
   toggle, chat logging and all overlay options). Changes apply immediately. The
   window is resizable; it opens sized and centred over EDMC, with a minimum size
-  that keeps every control visible.
+  that keeps every control visible. **Hide Boxes** removes the Show Messages
+  checkboxes from the pop-out. The button then reads **Show Boxes**. The choice
+  is saved, and the checkboxes in Settings stay available.
 - **Window** (pop-out) – opens a larger copy of the full chat log, with its own
-  channel + timestamp toggles along the bottom. Close it any time; the main-window
-  log keeps running.
+  channel + timestamp toggles along the bottom unless **Hide Boxes** is on.
+  Close it any time; the main-window log keeps running.
 - **Clear** (pop-out) – asks for confirmation, then empties the log.
 - **Pause Chat** (pop-out) – when ticked, the view stops jumping to the newest
   message.
@@ -102,7 +106,8 @@ shown. Turn it off from the **Settings** window or the Salty tab in
 
 - **Show messages in** – per-channel show/hide toggles (applied to the whole log
   immediately and saved). The same toggles appear in the pop-out window and in the
-  themed settings window.
+  themed settings window. **Hide Boxes**, in the themed settings window, hides
+  that pop-out row. Click it again (**Show Boxes**) to bring the row back.
 - **Show timestamps** – prefix each line with the message time (`HH:MM:SS`).
 - **Show message origin** – show/hide the channel label (e.g. `[Local]`, `[System]`).
   With it off, lines read `[time] Sender: message`.
@@ -157,6 +162,28 @@ shown. Turn it off from the **Settings** window or the Salty tab in
   installed and running, and that "Show incoming messages on screen" is enabled in
   the Salty settings tab.
 
+## Changelog
+
+### 1.0.2
+
+- **Hide Boxes.** Salty Settings has a Hide Boxes button under Show messages in.
+  It removes the channel, Time, and Origin checkboxes from the pop-out window.
+  The button then reads Show Boxes, and the choice is saved. The checkboxes in
+  Settings stay available, so filters still apply.
+- **Quality of life.** The pop-out can stay clear of the filter row while Clear,
+  Pause Chat, Stay on top, and Opacity remain. Opening the pop-out again keeps
+  the same view.
+
+### 1.0.1
+
+- Opacity slider for the pop-out window, and alignment fixes in Settings.
+- Squadron Leaders channel label renamed to Officer.
+
+### 1.0.0
+
+- First release. Chat log, channel filters, pop-out window, stay-on-top,
+  on-screen notifications, and chat logging.
+
 ## Development
 
 The plugin is a single `load.py` at the repository root, so it can be installed by
@@ -184,7 +211,7 @@ from config import config
 
 # Channel visibility and notification toggles, e.g. 'salty_show_local',
 # 'salty_notify_local', plus 'salty_overlay', 'salty_timestamps',
-# 'salty_origins' and 'salty_chat_logging'.
+# 'salty_origins', 'salty_chat_logging' and 'salty_hide_boxes'.
 show_local = config.get_bool("salty_show_local")
 ```
 

@@ -34,7 +34,7 @@ try:
 except Exception:  # pragma: no cover - theme is optional
     theme = None
 
-__version__ = "1.0.1"
+__version__ = "1.0.2"
 
 PLUGIN_DISPLAY_NAME = "Salty"
 PLUGIN_INTERNAL_NAME = "Salty"
@@ -170,6 +170,8 @@ _freeze_var: tk.BooleanVar | None = None
 _topmost_var: tk.BooleanVar | None = None
 _views: list[tk.Text] = []
 _popout: tk.Toplevel | None = None
+_popout_toggles: tk.Frame | None = None
+_popout_chat: tk.Frame | None = None
 _settings_win: tk.Toplevel | None = None
 
 _prefs_vars: dict[str, Any] = {}
@@ -257,6 +259,14 @@ def _chat_logging_enabled() -> bool:
 
 def _stay_on_top_key() -> str:
     return f"{CONFIG_PREFIX}_stay_on_top"
+
+
+def _hide_boxes_key() -> str:
+    return f"{CONFIG_PREFIX}_hide_boxes"
+
+
+def _boxes_hidden() -> bool:
+    return _cfg_bool(_hide_boxes_key(), False)
 
 
 def _popout_opacity_key() -> str:
@@ -1678,6 +1688,44 @@ def _build_toggle_strip(
     return checks
 
 
+def _apply_popout_boxes() -> None:
+    """Show or hide the pop-out copy of the Show Messages checkboxes."""
+    toggles = _popout_toggles
+    chat = _popout_chat
+    if toggles is None:
+        return
+    try:
+        if not toggles.winfo_exists():
+            return
+    except Exception:
+        return
+    try:
+        hidden = _boxes_hidden()
+        if hidden:
+            if toggles.winfo_ismapped():
+                toggles.pack_forget()
+            return
+        if toggles.winfo_ismapped():
+            return
+        # Pack order is call order. Forget the chat first so the checkbox row
+        # is claimed above it, then give the chat the remaining space.
+        if chat is not None and chat.winfo_exists() and chat.winfo_ismapped():
+            chat.pack_forget()
+        toggles.pack(side="bottom", fill="x", padx=4, pady=(0, 2))
+        if chat is not None and chat.winfo_exists():
+            chat.pack(fill="both", expand=True, padx=4, pady=4)
+    except Exception:
+        logger.exception("Failed to update Salty pop-out message boxes")
+
+
+def _set_boxes_hidden(hidden: bool) -> None:
+    try:
+        config.set(_hide_boxes_key(), bool(hidden))
+    except Exception:
+        logger.exception("Failed to persist Hide Boxes setting")
+    _apply_popout_boxes()
+
+
 def _save_overlay_settings(overlay_var, x_var, y_var, ttl_var, size_var) -> None:
     try:
         config.set(f"{CONFIG_PREFIX}_overlay", bool(overlay_var.get()))
@@ -1753,6 +1801,19 @@ def _open_settings() -> None:
     strip = tk.Frame(body, background=bg)
     strip.pack(fill="x", pady=(2, 8))
     _build_toggle_grid(strip, include_timestamp=True, include_origin=True, font_delta=0)
+
+    def _toggle_hide_boxes() -> None:
+        hidden = not _boxes_hidden()
+        _set_boxes_hidden(hidden)
+        hide_boxes_btn.configure(text="Show Boxes" if hidden else "Hide Boxes")
+
+    hide_boxes_btn = tk.Button(
+        body,
+        text="Show Boxes" if _boxes_hidden() else "Hide Boxes",
+        command=_toggle_hide_boxes,
+        font=_ui_font(0),
+    )
+    hide_boxes_btn.pack(anchor="w", pady=(0, 8))
 
     overlay_var = tk.BooleanVar(
         value=_cfg_bool(f"{CONFIG_PREFIX}_overlay", DEFAULT_OVERLAY_ENABLED)
@@ -1949,7 +2010,7 @@ def _open_settings() -> None:
 
 
 def _open_popout() -> None:
-    global _popout
+    global _popout, _popout_toggles, _popout_chat
 
     if _popout is not None:
         try:
@@ -2043,13 +2104,18 @@ def _open_popout() -> None:
 
     # Channel + timestamp toggles, tucked just above the bottom controls so they
     # are always reachable (packed bottom-up, after the controls row).
+    # Hide Boxes removes this row from the pop-out only; the settings window
+    # keeps the same checkboxes so the filters can still be changed.
     toggles = tk.Frame(_popout)
-    toggles.pack(side="bottom", fill="x", padx=4, pady=(0, 2))
+    _popout_toggles = toggles
     _build_toggle_grid(
         toggles, include_timestamp=True, include_origin=True, columns=3, font_delta=1
     )
+    if not _boxes_hidden():
+        toggles.pack(side="bottom", fill="x", padx=4, pady=(0, 2))
 
     container = tk.Frame(_popout)
+    _popout_chat = container
     container.pack(fill="both", expand=True, padx=4, pady=4)
 
     bg, fg = _theme_colors()
@@ -2069,7 +2135,7 @@ def _open_popout() -> None:
     _tag_text(text)
 
     def _on_close() -> None:
-        global _popout
+        global _popout, _popout_toggles, _popout_chat
         _unregister_view(text)
         try:
             config.set(f"{CONFIG_PREFIX}_popout_x", _popout.winfo_x())
@@ -2083,6 +2149,8 @@ def _open_popout() -> None:
         except Exception:
             pass
         _popout = None
+        _popout_toggles = None
+        _popout_chat = None
         _set_popout_active(False)
 
     _popout.protocol("WM_DELETE_WINDOW", _on_close)
