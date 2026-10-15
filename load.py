@@ -536,6 +536,7 @@ def _show_startup_hint() -> None:
     def _finish() -> None:
         global _hint_shown
         _hint_shown = True
+        logger.debug("Salty startup hint dismissed; loading the saved chat log")
         _flush_startup_history()
 
     box = _main_text
@@ -592,6 +593,7 @@ def _show_startup_hint() -> None:
             if not box.winfo_exists():
                 return
             if box.winfo_ismapped():
+                logger.debug("Salty startup hint shown inside the chat box")
                 state["timer"] = box.after(STARTUP_HINT_MS, _dismiss)
                 return
             state["poll"] = box.after(200, _arm)
