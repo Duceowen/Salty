@@ -109,6 +109,7 @@ OVERLAY_SIZES = ("normal", "large", "huge")
 
 DEFAULT_TIMESTAMPS = True
 DEFAULT_ORIGINS = True
+DEFAULT_STAY_ON_TOP = False
 
 MAX_MESSAGES = 1000
 
@@ -156,6 +157,7 @@ _filter_vars: Dict[str, tk.BooleanVar] = {}
 _timestamp_var: Optional[tk.BooleanVar] = None
 _origin_var: Optional[tk.BooleanVar] = None
 _freeze_var: Optional[tk.BooleanVar] = None
+_topmost_var: Optional[tk.BooleanVar] = None
 _views: List[tk.Text] = []
 _popout: Optional[tk.Toplevel] = None
 _settings_win: Optional[tk.Toplevel] = None
@@ -243,9 +245,23 @@ def _chat_logging_enabled() -> bool:
     return _cfg_bool(_chat_logging_key(), DEFAULT_CHAT_LOGGING)
 
 
+def _stay_on_top_key() -> str:
+    return f"{CONFIG_PREFIX}_stay_on_top"
+
+
+def _stay_on_top_enabled() -> bool:
+    var = _topmost_var
+    if var is not None:
+        try:
+            return bool(var.get())
+        except Exception:
+            pass
+    return _cfg_bool(_stay_on_top_key(), DEFAULT_STAY_ON_TOP)
+
+
 def _ensure_filter_vars() -> None:
     """Lazily create the shared show/timestamp/origin/freeze Tk variables (needs a Tk root)."""
-    global _timestamp_var, _origin_var, _freeze_var
+    global _timestamp_var, _origin_var, _freeze_var, _topmost_var
     if not _filter_vars:
         for channel in CHANNELS:
             _filter_vars[channel] = tk.BooleanVar(
@@ -257,6 +273,8 @@ def _ensure_filter_vars() -> None:
         _origin_var = tk.BooleanVar(value=_cfg_bool(_origin_key(), DEFAULT_ORIGINS))
     if _freeze_var is None:
         _freeze_var = tk.BooleanVar(value=False)
+    if _topmost_var is None:
+        _topmost_var = tk.BooleanVar(value=_cfg_bool(_stay_on_top_key(), DEFAULT_STAY_ON_TOP))
 
 
 def _timestamps_shown() -> bool:
@@ -1250,6 +1268,39 @@ def _theme_titlebar(window: tk.Widget) -> None:
         pass
 
 
+def _set_always_on_top(window: tk.Widget, enabled: bool) -> None:
+    """Pin a Salty window above other windows so the game cannot cover it."""
+    try:
+        window.wm_attributes("-topmost", bool(enabled))
+    except Exception:
+        pass
+
+
+def _apply_stay_on_top(window: Optional[tk.Toplevel]) -> None:
+    """Apply the saved stay-on-top preference to a Salty toplevel."""
+    if window is None:
+        return
+    try:
+        if not window.winfo_exists():
+            return
+    except Exception:
+        return
+    _set_always_on_top(window, _stay_on_top_enabled())
+
+
+def _toggle_stay_on_top() -> None:
+    try:
+        value = bool(_topmost_var.get()) if _topmost_var is not None else False
+    except Exception:
+        value = False
+    try:
+        config.set(_stay_on_top_key(), value)
+    except Exception:
+        logger.exception("Failed to persist the stay-on-top setting")
+    _apply_stay_on_top(_popout)
+    _apply_stay_on_top(_settings_win)
+
+
 def _ui_font(delta: int = 0):
     """Return a default-font spec, resized by ``delta`` points."""
     try:
@@ -1551,6 +1602,7 @@ def _open_settings() -> None:
                 _settings_win.deiconify()
                 _settings_win.lift()
                 _settings_win.focus_force()
+                _apply_stay_on_top(_settings_win)
                 return
         except Exception:
             pass
@@ -1620,6 +1672,17 @@ def _open_settings() -> None:
         selectcolor=bg, highlightthickness=0, bd=0, font=_ui_font(0), anchor="w",
     ).pack(anchor="w", pady=(0, 8))
 
+    _ensure_filter_vars()
+    _topmost_var.set(_cfg_bool(_stay_on_top_key(), DEFAULT_STAY_ON_TOP))
+    tk.Checkbutton(
+        body,
+        text="Stay on top of the game",
+        variable=_topmost_var,
+        command=_toggle_stay_on_top,
+        background=bg, foreground=fg, activebackground=bg, activeforeground=fg,
+        selectcolor=bg, highlightthickness=0, bd=0, font=_ui_font(0), anchor="w",
+    ).pack(anchor="w", pady=(0, 8))
+
     grid = tk.Frame(body, background=bg)
     grid.pack(fill="x")
 
@@ -1675,6 +1738,7 @@ def _open_settings() -> None:
             pass
     _style_tree(dlg, bg, fg)
     _theme_titlebar(dlg)
+    _apply_stay_on_top(dlg)
 
     def _retheme(_event=None) -> None:
         # Re-apply once the window is mapped; DWM title-bar attributes are only
@@ -1683,6 +1747,7 @@ def _open_settings() -> None:
             new_bg, new_fg = _theme_colors()
             _style_tree(dlg, new_bg, new_fg)
             _theme_titlebar(dlg)
+            _apply_stay_on_top(dlg)
         except Exception:
             pass
 
@@ -1727,6 +1792,7 @@ def _open_popout() -> None:
                 _popout.deiconify()
                 _popout.lift()
                 _popout.focus_force()
+                _apply_stay_on_top(_popout)
                 return
         except Exception:
             pass
@@ -1747,13 +1813,18 @@ def _open_popout() -> None:
     _popout.minsize(320, 200)
 
     # Pack the bottom controls first (from the bottom edge) so that shrinking the
-    # window never clips the Clear button / Pause Chat checkbutton; the chat area
-    # absorbs whatever space is left.
+    # window never clips the Clear button / Pause Chat / Stay on top controls; the
+    # chat area absorbs whatever space is left.
     bottom = tk.Frame(_popout)
     bottom.pack(side="bottom", fill="x", padx=4, pady=(0, 4))
     tk.Button(bottom, text="Clear", command=_clear_messages, font=_ui_font(1)).pack(side="left")
     freeze = tk.Checkbutton(bottom, text="Pause Chat", variable=_freeze_var, font=_ui_font(1))
     freeze.pack(side="left", padx=(8, 0))
+    _ensure_filter_vars()
+    _topmost_var.set(_cfg_bool(_stay_on_top_key(), DEFAULT_STAY_ON_TOP))
+    topmost = tk.Checkbutton(bottom, text="Stay on top", variable=_topmost_var,
+                             command=_toggle_stay_on_top, font=_ui_font(1))
+    topmost.pack(side="left", padx=(8, 0))
 
     # Channel + timestamp toggles, tucked just above the bottom controls so they
     # are always reachable (packed bottom-up, after the controls row).
@@ -1791,6 +1862,8 @@ def _open_popout() -> None:
         _popout.after_idle(_style_chat_texts)
         _popout.after(300, _style_chat_texts)
         _popout.after(150, lambda: _theme_titlebar(_popout))
+        _popout.after_idle(lambda: _apply_stay_on_top(_popout))
+        _popout.after(150, lambda: _apply_stay_on_top(_popout))
     except Exception:
         pass
 
