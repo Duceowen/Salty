@@ -160,3 +160,8 @@ shown. Turn it off from the **Settings** window or the Salty tab in
 ## Credits
 
 Ported from **Observatory Communicator** by Vithigar (Elite Observatory Core, MIT).
+
+## License
+
+MIT — see [LICENSE](LICENSE). The original `Copyright (c) 2021 Jonathan Miller`
+notice is retained because this is a derivative work of Elite Observatory Core.
