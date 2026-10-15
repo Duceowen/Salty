@@ -157,6 +157,57 @@ shown. Turn it off from the **Settings** window or the Salty tab in
   installed and running, and that "Show incoming messages on screen" is enabled in
   the Salty settings tab.
 
+## Development
+
+The plugin is a single `load.py` at the repository root, so it can be installed by
+dropping it into `plugins/Salty/` (see [Install](#install)).
+
+### EDMC plugin API
+
+`load.py` exposes the standard EDMC plugin entry points. There is no separate HTTP
+API: the plugin is driven by EDMC and by Elite Dangerous journal events, so the
+"public interface" is the set of callbacks another EDMC plugin or EDMC itself can call.
+
+| Callback | Purpose |
+| --- | --- |
+| `plugin_start3(plugin_dir)` | Called by EDMC on load; returns the display name `"Salty"`. |
+| `plugin_app(parent)` | Builds and returns the widget shown on EDMC's Salty tab. |
+| `plugin_prefs(parent, cmdr, is_beta)` | Builds the Salty tab in EDMC's Settings dialog. |
+| `prefs_changed(cmdr, is_beta)` | Persists the settings-tab widgets into EDMC's config. |
+| `journal_entry(cmdr, is_beta, system, station, entry, state)` | Consumes `ReceiveText` / `SendText` journal events. |
+| `plugin_stop()` | Releases resources when EDMC unloads the plugin. |
+
+Example (from another EDMC plugin) — read the settings this plugin persists:
+
+```python
+from config import config
+
+# Channel visibility and notification toggles, e.g. 'salty_show_local',
+# 'salty_notify_local', plus 'salty_overlay', 'salty_timestamps',
+# 'salty_origins' and 'salty_chat_logging'.
+show_local = config.get_bool("salty_show_local")
+```
+
+```javascript
+// The same keys are plain entries in EDMC's config, so they can also be read
+// outside Python (e.g. to drive an external tooltip or stream overlay).
+// config.toml -> salty_show_local = true
+```
+
+### Continuous integration
+
+`.github/workflows/ci.yml` runs on every push and pull request. It byte-compiles
+`load.py`, checks that `__version__` is strict SemVer, and lints with ruff
+(`--select E9,F`).
+
+### Plugin registry listing
+
+`.github/registry/Salty.json` is the entry submitted to the
+[EDMC Plugin Registry](https://github.com/EDCD/EDMC-Plugin-Registry), which is what
+makes the plugin appear in EDMC's plugin browser. When cutting a new version, bump
+`__version__` in `load.py`, update `pluginVer`, `pluginLastUpdate` and
+`pluginLastTestedEDMC` here, then open a PR to the registry with the updated file.
+
 ## Credits
 
 Ported from **Observatory Communicator** by Vithigar (Elite Observatory Core, MIT).

@@ -1,0 +1,53 @@
+name: CI
+
+on:
+  push:
+    branches: [main]
+  pull_request:
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+jobs:
+  check:
+    name: Compile and lint
+    runs-on: ubuntu-latest
+    steps:
+      - name: Check out
+        uses: actions/checkout@v4
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.13"
+
+      - name: Byte-compile load.py
+        run: python -m py_compile load.py
+
+      - name: Check __version__ is strict SemVer
+        run: |
+          python - <<'PY'
+          import ast
+          import pathlib
+          import re
+          import sys
+
+          source = pathlib.Path("load.py").read_text(encoding="utf-8")
+          version = None
+          for node in ast.parse(source).body:
+              if isinstance(node, ast.Assign):
+                  for target in node.targets:
+                      if isinstance(target, ast.Name) and target.id == "__version__":
+                          version = ast.literal_eval(node.value)
+          if version is None:
+              sys.exit("load.py does not define __version__")
+          if not re.fullmatch(r"\d+\.\d+\.\d+", version):
+              sys.exit(f"__version__ = {version!r} is not strict SemVer (Major.Minor.Patch)")
+          print(f"__version__ = {version}")
+          PY
+
+      - name: Lint with ruff
+        run: |
+          python -m pip install --quiet "ruff==0.17.1"
+          ruff check --select E9,F --output-format github .
