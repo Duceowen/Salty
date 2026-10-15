@@ -97,11 +97,12 @@ DEFAULT_NOTIFY = {
 }
 
 DEFAULT_OVERLAY_ENABLED = True
-# Default overlay anchor: left side of the screen, 30% of the way down from the
-# top. The live default is derived from the screen size at runtime (see
-# _overlay_default_pos); these values are the static fallbacks.
-DEFAULT_OVERLAY_X = 32
-DEFAULT_OVERLAY_Y = 324
+# Default overlay anchor: left side, 30% of the way down the visible overlay
+# canvas. The live default is derived at runtime from the screen's aspect ratio
+# (see _overlay_default_pos); these values are the static fallbacks expressed in
+# overlay units (the canvas is 1280x960, see OVERLAY_BASE_WIDTH/HEIGHT).
+DEFAULT_OVERLAY_X = 26
+DEFAULT_OVERLAY_Y = 288
 DEFAULT_OVERLAY_TTL = 8
 DEFAULT_OVERLAY_SIZE = "large"
 OVERLAY_SIZES = ("normal", "large", "huge")
@@ -117,6 +118,14 @@ NOTIFY_ID_PREFIX = "salty-"
 OVERLAY_LINE_STEP = {"normal": 20, "large": 28, "huge": 36}
 # Maximum number of simultaneous on-screen notifications (oldest are cleared).
 OVERLAY_MAX_STACK = 8
+
+# Modern Overlay maps legacy payload coordinates onto a fixed 1280x960 canvas
+# (ModernOverlay's DEFAULT_WINDOW_BASE_WIDTH/HEIGHT). These are overlay units,
+# not screen pixels. On wider-than-4:3 displays the default "fill" scale mode
+# shows only the top-left slice of that canvas, so we keep the anchor inside the
+# region that is actually visible to prevent notifications rendering off screen.
+OVERLAY_BASE_WIDTH = 1280
+OVERLAY_BASE_HEIGHT = 960
 
 # --------------------------------------------------------------------------- #
 # Runtime state
@@ -228,8 +237,20 @@ def _origins_shown() -> bool:
     return _cfg_bool(_origin_key(), DEFAULT_ORIGINS)
 
 
-def _overlay_default_pos() -> tuple:
-    """Default overlay anchor: left side, 30% down from the top of the screen."""
+def _overlay_visible_size() -> tuple:
+    """Return the (width, height) of the overlay canvas that is actually visible.
+
+    Modern Overlay renders legacy payload coordinates on a fixed 1280x960 canvas
+    (``OVERLAY_BASE_WIDTH``/``OVERLAY_BASE_HEIGHT``). In the default "fill" scale
+    mode that canvas is scaled until it covers the screen, so on wider-than-4:3
+    displays only the top-left region stays visible (the rest overflows past the
+    bottom/sides). Clamping into this region keeps notifications on screen for
+    "fill", "fit" and "stretch" alike, since all of those modes show at least the
+    top-left 4:3 slice. Falls back to the full canvas when the screen size is
+    unavailable.
+    """
+    base_w = OVERLAY_BASE_WIDTH
+    base_h = OVERLAY_BASE_HEIGHT
     width = height = 0
     try:
         root = tk._default_root  # type: ignore[attr-defined]
@@ -238,12 +259,53 @@ def _overlay_default_pos() -> tuple:
             height = int(root.winfo_screenheight())
     except Exception:
         width = height = 0
-    x = DEFAULT_OVERLAY_X
-    y = DEFAULT_OVERLAY_Y
-    if width > 0:
-        x = max(8, int(round(width * 0.02)))
-    if height > 0:
-        y = max(8, int(round(height * 0.30)))
+    if width <= 0 or height <= 0:
+        return base_w, base_h
+    screen_ratio = width / float(height)
+    base_ratio = base_w / float(base_h)
+    if screen_ratio >= base_ratio:
+        visible_w = float(base_w)
+        visible_h = base_w / screen_ratio
+    else:
+        visible_w = base_h * screen_ratio
+        visible_h = float(base_h)
+    visible_w = max(1, min(base_w, int(round(visible_w))))
+    visible_h = max(1, min(base_h, int(round(visible_h))))
+    return visible_w, visible_h
+
+
+def _overlay_default_pos() -> tuple:
+    """Default overlay anchor: left side, 30% down the visible overlay canvas."""
+    visible_w, visible_h = _overlay_visible_size()
+    x = max(8, int(round(visible_w * 0.02)))
+    y = max(8, int(round(visible_h * 0.30)))
+    return x, y
+
+
+def _clamp_overlay_draw_pos(x: int, y: int, count: int, step: int) -> tuple:
+    """Clamp the draw anchor so a column of ``count`` lines stays on screen.
+
+    The configured anchor is left untouched; this only nudges the rendered
+    column back inside the visible canvas. Y is shifted up by just enough to fit
+    the current number of stacked lines, so single messages stay exactly where
+    the anchor was placed and the column only moves when it would overflow.
+    """
+    visible_w, visible_h = _overlay_visible_size()
+    max_x = max(0, visible_w - 8)
+    # The column's last line ends one line-height below its own top, and that
+    # height is `step`, so the full column occupies `count * step`.
+    stack_height = max(0, step) * max(0, count)
+    max_y = max(0, visible_h - stack_height)
+    x = min(max(0, int(x)), max_x)
+    y = min(max(0, int(y)), max_y)
+    return x, y
+
+
+def _overlay_pos_from_cfg() -> tuple:
+    """Read the configured overlay anchor (X, Y) from config."""
+    default_x, default_y = _overlay_default_pos()
+    x = _cfg_int(f"{CONFIG_PREFIX}_overlay_x", default_x)
+    y = _cfg_int(f"{CONFIG_PREFIX}_overlay_y", default_y)
     return x, y
 
 
@@ -426,6 +488,11 @@ def _notify(channel: str, sender: str, message: str) -> None:
         "expire": now + ttl,
     })
 
+    # Nudge the column back on screen if the current stack would overflow. The
+    # configured anchor is preserved, so a single message stays where it was
+    # placed and the column only shifts up once it would run off the edge.
+    draw_x, draw_y = _clamp_overlay_draw_pos(base_x, base_y, len(_overlay_active), step)
+
     # Re-emit every active notification so they stack without overlapping.
     for index, entry in enumerate(_overlay_active):
         remaining = max(1, int(round(entry["expire"] - now)))
@@ -437,8 +504,8 @@ def _notify(channel: str, sender: str, message: str) -> None:
             "text": entry["text"],
             "color": entry["color"],
             "size": entry["size"],
-            "x": base_x,
-            "y": base_y + index * step,
+            "x": draw_x,
+            "y": draw_y + index * step,
             "ttl": remaining,
         }
         try:
@@ -449,7 +516,7 @@ def _notify(channel: str, sender: str, message: str) -> None:
     logger.debug(
         "Overlay notifications updated: %d active, ys=%s (newest: %s)",
         len(_overlay_active),
-        [base_y + i * step for i in range(len(_overlay_active))],
+        [draw_y + i * step for i in range(len(_overlay_active))],
         _overlay_active[0]["text"],
     )
 
@@ -1133,10 +1200,10 @@ def _open_settings() -> None:
     strip.pack(fill="x", pady=(2, 8))
     _build_toggle_grid(strip, include_timestamp=True, include_origin=True, font_delta=0)
 
-    default_x, default_y = _overlay_default_pos()
     overlay_var = tk.BooleanVar(value=_cfg_bool(f"{CONFIG_PREFIX}_overlay", DEFAULT_OVERLAY_ENABLED))
-    x_var = tk.StringVar(value=str(_cfg_int(f"{CONFIG_PREFIX}_overlay_x", default_x)))
-    y_var = tk.StringVar(value=str(_cfg_int(f"{CONFIG_PREFIX}_overlay_y", default_y)))
+    cfg_x, cfg_y = _overlay_pos_from_cfg()
+    x_var = tk.StringVar(value=str(cfg_x))
+    y_var = tk.StringVar(value=str(cfg_y))
     ttl_var = tk.StringVar(value=str(_cfg_int(f"{CONFIG_PREFIX}_overlay_ttl", DEFAULT_OVERLAY_TTL)))
     size_var = tk.StringVar(value=_cfg_str(f"{CONFIG_PREFIX}_overlay_size", DEFAULT_OVERLAY_SIZE))
     if size_var.get() not in OVERLAY_SIZES:
@@ -1456,15 +1523,15 @@ def plugin_prefs(parent: nb.Notebook, cmdr: str, is_beta: bool) -> Optional[tk.F
 
     base_row = row + 1
 
-    default_x, default_y = _overlay_default_pos()
+    cfg_x, cfg_y = _overlay_pos_from_cfg()
 
     nb.Label(frame, text="Overlay position X:").grid(row=base_row, column=0, sticky="w", pady=(8, 0))
-    x_var = tk.StringVar(value=str(_cfg_int(f"{CONFIG_PREFIX}_overlay_x", default_x)))
+    x_var = tk.StringVar(value=str(cfg_x))
     _prefs_vars["overlay_x"] = x_var
     nb.EntryMenu(frame, textvariable=x_var, width=6).grid(row=base_row, column=1, sticky="w", pady=(8, 0))
 
     nb.Label(frame, text="Y:").grid(row=base_row, column=2, sticky="e", pady=(8, 0))
-    y_var = tk.StringVar(value=str(_cfg_int(f"{CONFIG_PREFIX}_overlay_y", default_y)))
+    y_var = tk.StringVar(value=str(cfg_y))
     _prefs_vars["overlay_y"] = y_var
     nb.EntryMenu(frame, textvariable=y_var, width=6).grid(row=base_row, column=3, sticky="w", pady=(8, 0))
 

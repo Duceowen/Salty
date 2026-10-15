@@ -77,14 +77,19 @@ Elite Dangerous uses several channel tokens; these are normalised as follows:
   With it off, lines read `[time] Sender: message`.
 - **Show incoming messages on screen** – master switch for Modern Overlay notifications.
 - **Notify me on messages in** – per-channel notification toggles (NPC is off by default).
-- **Overlay position X / Y** – where the newest notification is drawn. Each new
-  notification appears at the top and older ones are pushed down, so a burst of
-  messages stacks into a readable column instead of overlapping. Up to 8 are shown
-  at once. Notifications are drawn **top-left anchored** at X / Y, so the text grows
-  to the right and never runs off the left edge. The default anchor is the **left
-  side of the screen, 30% of the way down from the top** (computed from your screen
-  size); adjust X / Y if the column appears off-screen. You can also reposition the
-  overlay from Modern Overlay's own UI.
+- **Overlay position X / Y** – where the newest notification is drawn. These are
+  coordinates on Modern Overlay's fixed **1280x960 canvas**, not screen pixels.
+  Each new notification appears at the top and older ones are pushed down, so a
+  burst of messages stacks into a readable column instead of overlapping. Up to 8
+  are shown at once. Notifications are drawn **top-left anchored** at X / Y, so the
+  text grows to the right and never runs off the left edge. The default anchor is
+  the **left side, 30% of the way down the visible canvas**. X / Y are stored and
+  displayed exactly as you enter them; at draw time the column is nudged back into
+  the region Modern Overlay actually shows (its default "fill" scale mode hides
+  the overflow on wider-than-4:3 displays), shifting up only if it would otherwise
+  run off the edge. So a message always stays on screen even if an out-of-range
+  value is entered, and a single message stays exactly where you placed it. You can
+  also reposition the overlay from Modern Overlay's own UI.
 - **Display duration** – how many seconds each notification stays on screen.
 - **Text size** – `normal`, `large` or `huge`.
 
