@@ -114,6 +114,11 @@ DEFAULT_TIMESTAMPS = True
 DEFAULT_ORIGINS = True
 DEFAULT_STAY_ON_TOP = False
 
+DEFAULT_POPOUT_X = 100
+DEFAULT_POPOUT_Y = 100
+DEFAULT_POPOUT_WIDTH = 560
+DEFAULT_POPOUT_HEIGHT = 360
+
 MAX_MESSAGES = 1000
 
 NOTIFY_ID_PREFIX = "salty-"
@@ -1956,8 +1961,13 @@ def _open_popout() -> None:
         _popout = None
         return
 
+    popout_x = _cfg_int(f"{CONFIG_PREFIX}_popout_x", DEFAULT_POPOUT_X)
+    popout_y = _cfg_int(f"{CONFIG_PREFIX}_popout_y", DEFAULT_POPOUT_Y)
+    popout_w = _cfg_int(f"{CONFIG_PREFIX}_popout_width", DEFAULT_POPOUT_WIDTH)
+    popout_h = _cfg_int(f"{CONFIG_PREFIX}_popout_height", DEFAULT_POPOUT_HEIGHT)
+
     _popout.title(PLUGIN_DISPLAY_NAME)
-    _popout.geometry("560x360")
+    _popout.geometry(f"{popout_w}x{popout_h}+{popout_x}+{popout_y}")
     _popout.minsize(320, 200)
 
     # Pack the bottom controls first (from the bottom edge) so that shrinking the
@@ -2001,7 +2011,7 @@ def _open_popout() -> None:
     # The canvas-drawn scrollbar follows the EDMC theme exactly (trough in the
     # theme background, thumb in the theme accent); a classic native scrollbar
     # keeps its light thumb on Windows and cannot be recoloured reliably.
-    text = tk.Text(container, wrap="word", state="disabled", height=16, width=64)
+    text = tk.Text(container, wrap="word", state="disabled", height=16, width=64, spacing1=0, spacing2=0, spacing3=10)
     scroll = ThemedScrollbar(
         container, command=text.yview, background=bg, foreground=fg
     )
@@ -2014,6 +2024,13 @@ def _open_popout() -> None:
         global _popout
         _unregister_view(text)
         try:
+            config.set(f"{CONFIG_PREFIX}_popout_x", _popout.winfo_x())
+            config.set(f"{CONFIG_PREFIX}_popout_y", _popout.winfo_y())
+            config.set(f"{CONFIG_PREFIX}_popout_width", _popout.winfo_width())
+            config.set(f"{CONFIG_PREFIX}_popout_height", _popout.winfo_height())
+        except Exception:
+            pass
+        try:
             _popout.destroy()
         except Exception:
             pass
@@ -2022,7 +2039,37 @@ def _open_popout() -> None:
 
     _popout.protocol("WM_DELETE_WINDOW", _on_close)
 
+    _popout_geom_after_id = None
+    def _on_configure(_event=None):
+        nonlocal _popout_geom_after_id
+        try:
+            if _popout is None or not _popout.winfo_exists():
+                return
+            if _popout_geom_after_id is not None:
+                _popout.after_cancel(_popout_geom_after_id)
+            _popout_geom_after_id = _popout.after(300, _save_popout_geometry)
+        except Exception:
+            pass
+
+    def _save_popout_geometry():
+        nonlocal _popout_geom_after_id
+        try:
+            if _popout is None or not _popout.winfo_exists():
+                return
+            config.set(f"{CONFIG_PREFIX}_popout_x", _popout.winfo_x())
+            config.set(f"{CONFIG_PREFIX}_popout_y", _popout.winfo_y())
+            config.set(f"{CONFIG_PREFIX}_popout_width", _popout.winfo_width())
+            config.set(f"{CONFIG_PREFIX}_popout_height", _popout.winfo_height())
+        except Exception:
+            pass
+        _popout_geom_after_id = None
+
+    _popout.bind("<Configure>", _on_configure)
+
     _register_view(text)
+    text.configure(state="normal")
+    text.see("end")
+    text.configure(state="disabled")
     _set_popout_active(True)
 
     try:
