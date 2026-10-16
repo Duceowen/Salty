@@ -18,10 +18,13 @@ from __future__ import annotations
 
 import logging
 import os
+import subprocess
 import sys
+import textwrap
 import time
 import tkinter as tk
 from datetime import datetime, timezone
+from tkinter import colorchooser
 from tkinter import font as tkfont
 from tkinter import ttk
 from typing import Any
@@ -34,7 +37,7 @@ try:
 except Exception:  # pragma: no cover - theme is optional
     theme = None
 
-__version__ = "1.0.2"
+__version__ = "1.1.0"
 
 PLUGIN_DISPLAY_NAME = "Salty"
 PLUGIN_INTERNAL_NAME = "Salty"
@@ -114,7 +117,16 @@ OVERLAY_SIZES = ("normal", "large", "huge")
 
 DEFAULT_TIMESTAMPS = True
 DEFAULT_ORIGINS = True
+DEFAULT_SHOW_FROM = True
+DEFAULT_SHOW_TO = True
 DEFAULT_STAY_ON_TOP = False
+
+# Channels the player can recolour. NPC keeps its built-in colour.
+COLOR_CHANNELS = ("local", "system", "private", "wing", "squadron", "squadleaders")
+
+# Overlay notifications wrap near the middle of the requested 30-40 character
+# range. Words are never split; a word that does not fit moves to the next line.
+OVERLAY_WRAP_WIDTH = 36
 
 DEFAULT_POPOUT_X = 100
 DEFAULT_POPOUT_Y = 100
@@ -143,10 +155,32 @@ OVERLAY_BASE_HEIGHT = 960
 # to outlast the platform double-click interval so the two are not confused.
 CLICK_ACTION_DELAY_MS = 500
 
-# One-time hint shown next to the main widget at startup, before the saved chat
-# log is loaded and displayed.
-STARTUP_HINT_MS = 10000
-STARTUP_HINT_TEXT = "Single Click to Open Chat box. Double click for settings."
+# One-time hint shown inside the chat box at startup, before the saved chat log
+# is loaded. A click before it expires dismisses it and opens the pop-out.
+STARTUP_HINT_MS = 6000
+STARTUP_HINT_TEXT = "Single Click to pop window out Double Click for Options."
+HOVER_TIP_TEXT = "Single Click to pop window out Double Click for Options."
+
+# SendText/ReceiveText tokens that are channels, not commander names.
+_NOT_A_COMMANDER = {
+    "local",
+    "starsystem",
+    "system",
+    "wing",
+    "squadron",
+    "squadleaders",
+    "squadron leaders",
+    "squadron_leaders",
+    "squadronleaders",
+    "npc",
+    "player",
+    "friend",
+    "voicechat",
+    "voice chat",
+    "direct",
+    "private",
+    "commander",
+}
 
 # Shown in the main widget while the pop-out window owns the full chat log.
 POPOUT_ACTIVE_TEXT = "Chat Pop-out Active"
@@ -166,6 +200,8 @@ _main_text: tk.Text | None = None
 _filter_vars: dict[str, tk.BooleanVar] = {}
 _timestamp_var: tk.BooleanVar | None = None
 _origin_var: tk.BooleanVar | None = None
+_from_var: tk.BooleanVar | None = None
+_to_var: tk.BooleanVar | None = None
 _freeze_var: tk.BooleanVar | None = None
 _topmost_var: tk.BooleanVar | None = None
 _views: list[tk.Text] = []
@@ -186,6 +222,7 @@ _history_snapshot_taken = False
 _history_flushed = False
 _hint_started = False
 _hint_shown = False
+_dismiss_startup_hint_fn = None
 
 # Overlay (Modern Overlay) state
 _overlay_send = None
@@ -249,6 +286,18 @@ def _origin_key() -> str:
     return f"{CONFIG_PREFIX}_origins"
 
 
+def _from_key() -> str:
+    return f"{CONFIG_PREFIX}_show_from"
+
+
+def _to_key() -> str:
+    return f"{CONFIG_PREFIX}_show_to"
+
+
+def _color_key(channel: str) -> str:
+    return f"{CONFIG_PREFIX}_color_{channel}"
+
+
 def _chat_logging_key() -> str:
     return f"{CONFIG_PREFIX}_chat_logging"
 
@@ -289,7 +338,7 @@ def _stay_on_top_enabled() -> bool:
 
 def _ensure_filter_vars() -> None:
     """Lazily create the shared show/timestamp/origin/freeze Tk variables (needs a Tk root)."""
-    global _timestamp_var, _origin_var, _freeze_var, _topmost_var
+    global _timestamp_var, _origin_var, _from_var, _to_var, _freeze_var, _topmost_var
     if not _filter_vars:
         for channel in CHANNELS:
             _filter_vars[channel] = tk.BooleanVar(
@@ -301,6 +350,10 @@ def _ensure_filter_vars() -> None:
         )
     if _origin_var is None:
         _origin_var = tk.BooleanVar(value=_cfg_bool(_origin_key(), DEFAULT_ORIGINS))
+    if _from_var is None:
+        _from_var = tk.BooleanVar(value=_cfg_bool(_from_key(), DEFAULT_SHOW_FROM))
+    if _to_var is None:
+        _to_var = tk.BooleanVar(value=_cfg_bool(_to_key(), DEFAULT_SHOW_TO))
     if _freeze_var is None:
         _freeze_var = tk.BooleanVar(value=False)
     if _topmost_var is None:
@@ -325,6 +378,60 @@ def _origins_shown() -> bool:
         except Exception:
             pass
     return _cfg_bool(_origin_key(), DEFAULT_ORIGINS)
+
+
+def _from_labels_shown() -> bool:
+    if _from_var is not None:
+        try:
+            return bool(_from_var.get())
+        except Exception:
+            pass
+    return _cfg_bool(_from_key(), DEFAULT_SHOW_FROM)
+
+
+def _to_labels_shown() -> bool:
+    if _to_var is not None:
+        try:
+            return bool(_to_var.get())
+        except Exception:
+            pass
+    return _cfg_bool(_to_key(), DEFAULT_SHOW_TO)
+
+
+def _valid_color(value: str) -> bool:
+    text = (value or "").strip()
+    if text.startswith("#"):
+        hexpart = text[1:]
+        return len(hexpart) in (3, 6, 8) and all(
+            char in "0123456789abcdefABCDEF" for char in hexpart
+        )
+    return bool(text)
+
+
+def _channel_color(channel: str) -> str:
+    """Configured text colour for a channel, used by the log and the overlay."""
+    default = CHANNEL_COLORS.get(channel, "#ffffff")
+    raw = _cfg_str(_color_key(channel), default).strip()
+    if _valid_color(raw):
+        return raw
+    return default
+
+
+def _contrast_on(color: str) -> str:
+    """Pick black or white text so a swatch label stays readable."""
+    hexpart = color[1:] if color.startswith("#") else ""
+    if len(hexpart) == 3:
+        hexpart = "".join(char * 2 for char in hexpart)
+    if len(hexpart) < 6:
+        return "#000000"
+    try:
+        red = int(hexpart[0:2], 16)
+        green = int(hexpart[2:4], 16)
+        blue = int(hexpart[4:6], 16)
+    except ValueError:
+        return "#000000"
+    luminance = 0.299 * red + 0.587 * green + 0.114 * blue
+    return "#000000" if luminance > 150 else "#ffffff"
 
 
 def _overlay_visible_size() -> tuple:
@@ -456,11 +563,15 @@ def _sanitise_field(value: Any) -> str:
 
 
 def _write_chat_log(item: dict[str, Any]) -> None:
+    # time, channel, from, to, direction, message. Direction is "in" or "out"
+    # so a reloaded private line still knows who spoke and who it was for.
     line = "\t".join(
         (
             _sanitise_field(item.get("time", "")),
             _sanitise_field(item.get("channel", "")),
             _sanitise_field(item.get("from", "")),
+            _sanitise_field(item.get("to", "")),
+            "in" if item.get("incoming") else "out",
             _sanitise_field(item.get("message", "")),
         )
     )
@@ -469,6 +580,31 @@ def _write_chat_log(item: dict[str, Any]) -> None:
             handle.write(line + "\n")
     except Exception:
         logger.exception("Failed to append to the Salty chat log")
+
+
+def _parse_chat_log_line(line: str) -> dict[str, Any] | None:
+    """Parse one chat-log row, including the older 4-field rows."""
+    parts = line.split("\t")
+    if len(parts) >= 6:
+        stamp, channel, sender, target, direction = parts[:5]
+        message = "\t".join(parts[5:])
+        incoming = direction == "in"
+    elif len(parts) == 4:
+        stamp, channel, sender, message = parts
+        target = ""
+        incoming = False
+    else:
+        return None
+    if channel not in CHANNELS:
+        channel = "private"
+    return {
+        "time": stamp,
+        "channel": channel,
+        "from": sender,
+        "to": target,
+        "message": message,
+        "incoming": incoming,
+    }
 
 
 def _read_chat_log() -> list[dict[str, Any]]:
@@ -481,21 +617,9 @@ def _read_chat_log() -> list[dict[str, Any]]:
             line = raw.rstrip("\n").rstrip("\r")
             if not line:
                 continue
-            parts = line.split("\t", 3)
-            if len(parts) != 4:
-                continue
-            stamp, channel, sender, message = parts
-            if channel not in CHANNELS:
-                channel = "private"
-            items.append(
-                {
-                    "time": stamp,
-                    "channel": channel,
-                    "from": sender,
-                    "message": message,
-                    "incoming": False,
-                }
-            )
+            item = _parse_chat_log_line(line)
+            if item is not None:
+                items.append(item)
     if len(items) > MAX_MESSAGES:
         items = items[-MAX_MESSAGES:]
     return items
@@ -572,21 +696,29 @@ def _dialog_master(preferred: tk.Misc | None = None) -> tk.Misc | None:
 # --------------------------------------------------------------------------- #
 # Startup hint
 # --------------------------------------------------------------------------- #
+def _dismiss_startup_hint() -> None:
+    """Hide the startup hint immediately, if it is still on screen."""
+    fn = _dismiss_startup_hint_fn
+    if fn is not None:
+        fn()
+
+
 def _show_startup_hint() -> None:
     """Show a one-time hint inside the chat box, then load the saved chat log.
 
     The hint is an overlay label tucked into the chat box itself rather than a
     floating window, so it always appears exactly where the click controls it
-    describes actually are.
+    describes actually are. A click before the timer ends removes it at once.
     """
-    global _hint_started
+    global _hint_started, _dismiss_startup_hint_fn
 
     if _hint_started:
         return
     _hint_started = True
 
     def _finish() -> None:
-        global _hint_shown
+        global _hint_shown, _dismiss_startup_hint_fn
+        _dismiss_startup_hint_fn = None
         _hint_shown = True
         logger.debug("Salty startup hint dismissed; loading the saved chat log")
         _flush_startup_history()
@@ -603,15 +735,20 @@ def _show_startup_hint() -> None:
             text=STARTUP_HINT_TEXT,
             background=bg,
             foreground=fg,
-            font=_ui_font(1),
-            padx=10,
-            pady=6,
-            relief="solid",
-            bd=1,
-            justify="left",
-            wraplength=260,
+            font=_ui_font(0),
+            padx=8,
+            pady=4,
+            relief="flat",
+            bd=0,
+            justify="center",
+            wraplength=220,
+            cursor="arrow",
         )
         label.place(relx=0.5, rely=0.5, anchor="center")
+        label.bind("<Button-1>", _on_chat_click)
+        label.bind("<Double-Button-1>", _on_chat_double_click)
+        label.bind("<Button-3>", _on_chat_menu)
+        _attach_hover_tip(label, HOVER_TIP_TEXT)
     except Exception:
         logger.exception("Could not show the Salty startup hint")
         _finish()
@@ -635,6 +772,8 @@ def _show_startup_hint() -> None:
         except Exception:
             pass
         _finish()
+
+    _dismiss_startup_hint_fn = _dismiss
 
     def _arm() -> None:
         # Only start counting down once the box is really on screen: the Salty
@@ -685,13 +824,16 @@ def _on_chat_click(event: tk.Event) -> str:
     # Tk may deliver <Button-1> and <Double-Button-1> for the same physical
     # press in either order, so ignore the trailing single click too.
     if time.monotonic() < _suppress_until:
+        _dismiss_startup_hint()
         return "break"
+    # Schedule on the chat box itself. The hint label is destroyed as soon as
+    # it is clicked, and a timer parked on that label would be cancelled with it.
+    host = _main_text if _main_text is not None else event.widget
     try:
-        _pending_click = event.widget.after(
-            CLICK_ACTION_DELAY_MS, _open_popout_deferred
-        )
+        _pending_click = host.after(CLICK_ACTION_DELAY_MS, _open_popout_deferred)
     except Exception:
         _open_popout()
+    _dismiss_startup_hint()
     return "break"
 
 
@@ -699,8 +841,77 @@ def _on_chat_double_click(event: tk.Event) -> str:
     global _suppress_until
     _cancel_pending_click()
     _suppress_until = time.monotonic() + (CLICK_ACTION_DELAY_MS / 1000.0)
+    _dismiss_startup_hint()
     _open_settings()
     return "break"
+
+
+def _attach_hover_tip(widget: tk.Widget, text: str) -> None:
+    """Show a small hover tip. The tip window hangs off the app root, not the
+    plugin frame, so EDMC's theme walk never finds a Toplevel in the plugin."""
+    state: dict[str, Any] = {"win": None, "after": None}
+
+    def _hide(_event: tk.Event | None = None) -> None:
+        handle = state.get("after")
+        state["after"] = None
+        if handle is not None:
+            try:
+                widget.after_cancel(handle)
+            except Exception:
+                pass
+        win = state.get("win")
+        state["win"] = None
+        if win is not None:
+            try:
+                win.destroy()
+            except Exception:
+                pass
+
+    def _reveal(event: tk.Event) -> None:
+        state["after"] = None
+        try:
+            if not widget.winfo_exists():
+                return
+        except Exception:
+            return
+        try:
+            win = tk.Toplevel(_dialog_master(widget))
+        except Exception:
+            return
+        state["win"] = win
+        try:
+            win.wm_overrideredirect(True)
+            win.wm_attributes("-topmost", True)
+        except Exception:
+            pass
+        bg, fg = _theme_colors()
+        tk.Label(
+            win,
+            text=text,
+            background=bg,
+            foreground=fg,
+            font=_ui_font(0),
+            padx=6,
+            pady=3,
+            relief="flat",
+            bd=0,
+            justify="left",
+        ).pack()
+        try:
+            win.geometry(f"+{event.x_root + 14}+{event.y_root + 18}")
+        except Exception:
+            pass
+
+    def _show(event: tk.Event) -> None:
+        _hide()
+        try:
+            state["after"] = widget.after(350, lambda: _reveal(event))
+        except Exception:
+            _reveal(event)
+
+    widget.bind("<Enter>", _show, add="+")
+    widget.bind("<Leave>", _hide, add="+")
+    widget.bind("<Button>", _hide, add="+")
 
 
 def _build_chat_menu() -> tk.Menu:
@@ -758,6 +969,16 @@ def _normalise_channel(raw: str | None) -> str:
         return "npc"
     # player / friend / voicechat / direct and anything unknown -> private
     return "private"
+
+
+def _private_peer(raw: str | None) -> str:
+    """Commander name a private message was sent to, or empty when unknown."""
+    name = str(raw or "").strip()
+    if not name or name.lower() in _NOT_A_COMMANDER:
+        return ""
+    if _normalise_channel(name) != "private":
+        return ""
+    return name
 
 
 def _event_time(entry: dict[str, Any]) -> str:
@@ -875,6 +1096,108 @@ def _toast_clear(send, overlay_id: str) -> None:
         pass
 
 
+def _wrap_overlay_text(text: str, width: int = OVERLAY_WRAP_WIDTH) -> str:
+    """Wrap overlay text on word boundaries at about 30-40 characters."""
+    cleaned = " ".join(str(text or "").replace("\r", " ").replace("\n", " ").split())
+    if not cleaned:
+        return ""
+    return textwrap.fill(
+        cleaned,
+        width=width,
+        break_long_words=False,
+        break_on_hyphens=False,
+    )
+
+
+def _overlay_line_count(text: str) -> int:
+    if not text:
+        return 1
+    return max(1, text.count("\n") + 1)
+
+
+def _overlay_body(channel: str, sender: str, message: str) -> str:
+    sender = sender or ""
+    message = message or ""
+    if channel == "private" and _from_labels_shown():
+        raw = f"From: {sender}: {message}"
+    else:
+        raw = f"{sender}: {message}"
+    return _wrap_overlay_text(raw)
+
+
+def _entry_line_step(entry: dict[str, Any]) -> int:
+    size = entry.get("size") or DEFAULT_OVERLAY_SIZE
+    if size not in OVERLAY_SIZES:
+        size = DEFAULT_OVERLAY_SIZE
+    return OVERLAY_LINE_STEP.get(size, OVERLAY_LINE_STEP[DEFAULT_OVERLAY_SIZE])
+
+
+def _emit_overlay_stack(send) -> None:
+    """Redraw every active notification, stacking wrapped lines without overlap."""
+    if not _overlay_active:
+        return
+    default_x, default_y = _overlay_default_pos()
+    base_x = _cfg_int(f"{CONFIG_PREFIX}_overlay_x", default_x)
+    base_y = _cfg_int(f"{CONFIG_PREFIX}_overlay_y", default_y)
+    now = time.monotonic()
+    stack_height = sum(
+        max(1, int(entry.get("lines") or 1)) * _entry_line_step(entry)
+        for entry in _overlay_active
+    )
+    # count=1 and step=stack_height asks the clamp to keep the whole column
+    # on screen, including extra lines created by word wrap.
+    draw_x, draw_y = _clamp_overlay_draw_pos(base_x, base_y, 1, stack_height)
+    cursor_y = draw_y
+    ys: list[int] = []
+    for entry in _overlay_active:
+        lines = max(1, int(entry.get("lines") or 1))
+        remaining = max(1, round(entry["expire"] - now))
+        payload = {
+            "event": "LegacyOverlay",
+            "type": "message",
+            "id": entry["id"],
+            "plugin": PLUGIN_DISPLAY_NAME,
+            "text": entry["text"],
+            "color": entry["color"],
+            "size": entry["size"],
+            "x": draw_x,
+            "y": cursor_y,
+            "ttl": remaining,
+        }
+        ys.append(cursor_y)
+        cursor_y += lines * _entry_line_step(entry)
+        try:
+            send(payload)
+        except Exception:
+            logger.exception("Failed to send overlay notification")
+    logger.debug(
+        "Overlay notifications updated: %d active, ys=%s (newest: %s)",
+        len(_overlay_active),
+        ys,
+        _overlay_active[0]["text"],
+    )
+
+
+def _refresh_overlay_entries() -> None:
+    """Apply the current channel colours (and From: label) to live toasts."""
+    if not _overlay_active:
+        return
+    for entry in _overlay_active:
+        channel = entry.get("channel") or ""
+        entry["color"] = _channel_color(channel)
+        entry["text"] = _overlay_body(
+            channel, entry.get("sender") or "", entry.get("message") or ""
+        )
+        entry["lines"] = _overlay_line_count(entry["text"])
+    send = _overlay_send
+    if send is None:
+        return
+    now = time.monotonic()
+    _overlay_active[:] = [entry for entry in _overlay_active if entry["expire"] > now]
+    if _overlay_active:
+        _emit_overlay_stack(send)
+
+
 def _notify(channel: str, sender: str, message: str) -> None:
     if not _cfg_bool(f"{CONFIG_PREFIX}_overlay", DEFAULT_OVERLAY_ENABLED):
         return
@@ -890,11 +1213,6 @@ def _notify(channel: str, sender: str, message: str) -> None:
     size = _cfg_str(f"{CONFIG_PREFIX}_overlay_size", DEFAULT_OVERLAY_SIZE)
     if size not in OVERLAY_SIZES:
         size = DEFAULT_OVERLAY_SIZE
-    step = OVERLAY_LINE_STEP.get(size, OVERLAY_LINE_STEP[DEFAULT_OVERLAY_SIZE])
-
-    default_x, default_y = _overlay_default_pos()
-    base_x = _cfg_int(f"{CONFIG_PREFIX}_overlay_x", default_x)
-    base_y = _cfg_int(f"{CONFIG_PREFIX}_overlay_y", default_y)
     ttl = max(1, _cfg_int(f"{CONFIG_PREFIX}_overlay_ttl", DEFAULT_OVERLAY_TTL))
 
     global _overlay_seq
@@ -904,59 +1222,39 @@ def _notify(channel: str, sender: str, message: str) -> None:
     # Drop notifications that have already expired.
     _overlay_active[:] = [e for e in _overlay_active if e["expire"] > now]
 
-    # Enforce the maximum number of simultaneous lines (evict oldest).
+    # Enforce the maximum number of simultaneous notifications (evict oldest).
     while len(_overlay_active) >= OVERLAY_MAX_STACK:
         _toast_clear(send, _overlay_active.pop()["id"])
 
+    body = _overlay_body(channel, sender, message)
     # Newest notification goes on top; older ones are pushed down.
     _overlay_active.insert(
         0,
         {
             "id": f"{NOTIFY_ID_PREFIX}{channel}-{_overlay_seq}",
-            "text": f"{sender}: {message}",
-            "color": CHANNEL_COLORS.get(channel, "#ffffff"),
+            "channel": channel,
+            "sender": sender,
+            "message": message or "",
+            "text": body,
+            "lines": _overlay_line_count(body),
+            "color": _channel_color(channel),
             "size": size,
             "expire": now + ttl,
         },
     )
-
-    # Nudge the column back on screen if the current stack would overflow. The
-    # configured anchor is preserved, so a single message stays where it was
-    # placed and the column only shifts up once it would run off the edge.
-    draw_x, draw_y = _clamp_overlay_draw_pos(base_x, base_y, len(_overlay_active), step)
-
-    # Re-emit every active notification so they stack without overlapping.
-    for index, entry in enumerate(_overlay_active):
-        remaining = max(1, round(entry["expire"] - now))
-        payload = {
-            "event": "LegacyOverlay",
-            "type": "message",
-            "id": entry["id"],
-            "plugin": PLUGIN_DISPLAY_NAME,
-            "text": entry["text"],
-            "color": entry["color"],
-            "size": entry["size"],
-            "x": draw_x,
-            "y": draw_y + index * step,
-            "ttl": remaining,
-        }
-        try:
-            send(payload)
-        except Exception:
-            logger.exception("Failed to send overlay notification")
-
-    logger.debug(
-        "Overlay notifications updated: %d active, ys=%s (newest: %s)",
-        len(_overlay_active),
-        [draw_y + i * step for i in range(len(_overlay_active))],
-        _overlay_active[0]["text"],
-    )
+    _emit_overlay_stack(send)
 
 
 # --------------------------------------------------------------------------- #
 # Message store / rendering
 # --------------------------------------------------------------------------- #
 def _format_prefix(item: dict[str, Any]) -> str:
+    """Build the leader shown before the message text.
+
+    Private messages keep the ``[Private]`` channel tag. Incoming ones can add
+    ``From:`` after it, and outgoing ones can add ``To: <commander>``. The
+    local commander is stored as ``Me``.
+    """
     label = CHANNEL_LABELS.get(item["channel"], item["channel"])
     bits: list[str] = []
     if _timestamps_shown():
@@ -964,7 +1262,16 @@ def _format_prefix(item: dict[str, Any]) -> str:
     if _origins_shown():
         bits.append(f"[{label}]")
     prefix = (" ".join(bits) + " ") if bits else ""
-    return f"{prefix}{item['from']}: "
+    sender = str(item.get("from") or "")
+    channel = item.get("channel")
+    incoming = bool(item.get("incoming"))
+    if channel == "private" and incoming and _from_labels_shown():
+        sender = f"From: {sender}"
+    if channel == "private" and not incoming and _to_labels_shown():
+        target = str(item.get("to") or "").strip()
+        if target:
+            return f"{prefix}To: {target} {sender}: "
+    return f"{prefix}{sender}: "
 
 
 def _trim(text: tk.Text) -> None:
@@ -998,12 +1305,26 @@ def _render_all(text: tk.Text) -> None:
 
 
 def _add_message(
-    channel: str, sender: str, message: str, incoming: bool, entry: dict[str, Any]
+    channel: str,
+    sender: str,
+    message: str,
+    incoming: bool,
+    entry: dict[str, Any],
+    target: str = "",
 ) -> None:
+    # The local commander is always "Me" in the log. Private rows also record
+    # who the message was sent to, so the file shows both ends of the exchange.
+    if incoming:
+        origin = sender or "Unknown"
+        destination = "Me" if channel == "private" else ""
+    else:
+        origin = "Me"
+        destination = target if channel == "private" else ""
     item = {
         "time": _event_time(entry),
         "channel": channel,
-        "from": sender,
+        "from": origin,
+        "to": destination,
         "message": message or "",
         "incoming": incoming,
     }
@@ -1126,17 +1447,22 @@ def _themed_confirm(parent: tk.Misc, message: str) -> bool:
     return bool(result["value"])
 
 
-def _confirm_clear() -> bool:
-    """Ask the user to confirm clearing the chat history."""
-    parent = None
+def _confirm_parent() -> tk.Misc | None:
     try:
+        if _settings_win is not None and _settings_win.winfo_exists():
+            return _settings_win
         if _popout is not None and _popout.winfo_exists():
-            parent = _popout
-        elif _main_frame is not None and _main_frame.winfo_exists():
-            parent = _main_frame.winfo_toplevel()
+            return _popout
+        if _main_frame is not None and _main_frame.winfo_exists():
+            return _main_frame.winfo_toplevel()
     except Exception:
-        parent = None
-    return _themed_confirm(parent, "Clear chat history?")
+        return None
+    return None
+
+
+def _confirm_clear() -> bool:
+    """Ask the user to confirm clearing the chat window."""
+    return _themed_confirm(_confirm_parent(), "Clear the chat window?")
 
 
 def _clear_messages() -> None:
@@ -1152,12 +1478,87 @@ def _clear_messages() -> None:
             pass
 
 
+def _confirm_clear_log() -> bool:
+    return _themed_confirm(
+        _confirm_parent(),
+        "Clear the saved chat log?\nThis deletes SaltyChat.log and the messages currently shown.",
+    )
+
+
+def _clear_chat_log() -> None:
+    """Delete the on-disk chat log after confirmation, and clear the window."""
+    if not _confirm_clear_log():
+        return
+    path = _chat_log_path()
+    try:
+        if os.path.isfile(path):
+            os.remove(path)
+    except Exception:
+        logger.exception("Failed to delete the Salty chat log")
+        return
+    _history_pending.clear()
+    _messages.clear()
+    for text in _views:
+        try:
+            text.configure(state="normal")
+            text.delete("1.0", "end")
+            text.configure(state="disabled")
+        except Exception:
+            pass
+
+
+def _open_log_folder() -> None:
+    """Open the folder that holds SaltyChat.log so it can be copied as a backup."""
+    path = _chat_log_dir()
+    try:
+        os.makedirs(path, exist_ok=True)
+    except Exception:
+        logger.exception("Failed to prepare the Salty log folder")
+    try:
+        if sys.platform == "win32":
+            os.startfile(path)  # type: ignore[attr-defined]
+        elif sys.platform == "darwin":
+            subprocess.Popen(["open", path])
+        else:
+            subprocess.Popen(["xdg-open", path])
+    except Exception:
+        logger.exception("Failed to open the Salty log folder")
+
+
 # --------------------------------------------------------------------------- #
 # UI construction
 # --------------------------------------------------------------------------- #
 def _tag_text(text: tk.Text) -> None:
     for channel in CHANNELS:
-        text.tag_configure(f"ch_{channel}", foreground=CHANNEL_COLORS[channel])
+        text.tag_configure(f"ch_{channel}", foreground=_channel_color(channel))
+
+
+def _apply_channel_colors() -> None:
+    """Push the configured channel colours into every chat view and live toast."""
+    seen: list[tk.Text] = []
+    for text in list(_views):
+        seen.append(text)
+        try:
+            _tag_text(text)
+        except Exception:
+            pass
+    if _main_text is not None and _main_text not in seen:
+        try:
+            _tag_text(_main_text)
+        except Exception:
+            pass
+    _refresh_overlay_entries()
+
+
+def _set_channel_color(channel: str, color: str) -> None:
+    if channel not in COLOR_CHANNELS or not _valid_color(color):
+        return
+    try:
+        config.set(_color_key(channel), color)
+    except Exception:
+        logger.exception("Failed to persist colour for %s", channel)
+        return
+    _apply_channel_colors()
 
 
 def _walk(widget: tk.Widget):
@@ -1187,6 +1588,7 @@ class ThemedScrollbar(tk.Canvas):
         background="grey4",
         foreground="#ff8000",
         width=14,
+        min_thumb=8,
         **kw,
     ):
         kw.setdefault("highlightthickness", 0)
@@ -1200,6 +1602,7 @@ class ThemedScrollbar(tk.Canvas):
         self._trough = background
         self._thumb = foreground
         self._thumb_active = foreground
+        self._min_thumb = max(4, int(min_thumb))
         self._first = 0.0
         self._last = 1.0
         self._drag = False
@@ -1243,8 +1646,8 @@ class ThemedScrollbar(tk.Canvas):
             return
         top = int(self._first * h)
         bottom = int(self._last * h)
-        if bottom - top < 8:
-            bottom = min(h, top + 8)
+        if bottom - top < self._min_thumb:
+            bottom = min(h, top + self._min_thumb)
         self._top = top
         self._bottom = bottom
         color = self._thumb_active if self._drag else self._thumb
@@ -1444,6 +1847,8 @@ def _style_tree(root: tk.Widget, bg: str, fg: str) -> None:
                     borderwidth=0,
                 )
             elif isinstance(widget, tk.Button):
+                if getattr(widget, "_salty_color_swatch", False):
+                    continue
                 widget.configure(
                     background=bg,
                     foreground=fg,
@@ -1460,7 +1865,17 @@ def _style_tree(root: tk.Widget, bg: str, fg: str) -> None:
                     highlightbackground=bg,
                 )
             elif isinstance(widget, tk.Text):
-                widget.configure(background=bg, foreground=fg, insertbackground=fg)
+                widget.configure(
+                    background=bg,
+                    foreground=fg,
+                    insertbackground=fg,
+                    relief="flat",
+                    borderwidth=0,
+                    highlightthickness=0,
+                    highlightbackground=bg,
+                    highlightcolor=bg,
+                    cursor="arrow",
+                )
             elif isinstance(widget, tk.Label):
                 widget.configure(background=bg, foreground=fg)
         except Exception:
@@ -1571,10 +1986,32 @@ def _on_origins_change() -> None:
     _rerender_views()
 
 
+def _on_from_change() -> None:
+    try:
+        config.set(_from_key(), _from_labels_shown())
+    except Exception:
+        logger.exception("Failed to persist From setting")
+    _rerender_views()
+    _refresh_overlay_entries()
+
+
+def _on_to_change() -> None:
+    try:
+        config.set(_to_key(), _to_labels_shown())
+    except Exception:
+        logger.exception("Failed to persist To setting")
+    _rerender_views()
+
+
 def _make_toggle_checks(
-    parent: tk.Widget, include_timestamp: bool, include_origin: bool, font_delta: int
+    parent: tk.Widget,
+    include_timestamp: bool,
+    include_origin: bool,
+    font_delta: int,
+    include_from: bool = False,
+    include_to: bool = False,
 ) -> list[tk.Checkbutton]:
-    """Create the channel (and optional timestamp/origin) checkboxes."""
+    """Create the channel (and optional timestamp/origin/from/to) checkboxes."""
     _ensure_filter_vars()
     checks: list[tk.Checkbutton] = []
     for channel in CHANNELS:
@@ -1610,6 +2047,28 @@ def _make_toggle_checks(
                 anchor="w",
             )
         )
+    if include_from:
+        checks.append(
+            tk.Checkbutton(
+                parent,
+                text="From:",
+                variable=_from_var,
+                command=_on_from_change,
+                font=_ui_font(font_delta),
+                anchor="w",
+            )
+        )
+    if include_to:
+        checks.append(
+            tk.Checkbutton(
+                parent,
+                text="To:",
+                variable=_to_var,
+                command=_on_to_change,
+                font=_ui_font(font_delta),
+                anchor="w",
+            )
+        )
     return checks
 
 
@@ -1618,13 +2077,22 @@ def _build_toggle_grid(
     *,
     include_timestamp: bool = False,
     include_origin: bool = False,
+    include_from: bool = False,
+    include_to: bool = False,
     columns: int = 3,
     font_delta: int = 0,
     padx: int = 6,
     pady: int = 2,
 ) -> list[tk.Checkbutton]:
     """Lay the checkboxes out in a fixed grid (deterministic size, no reflow)."""
-    checks = _make_toggle_checks(parent, include_timestamp, include_origin, font_delta)
+    checks = _make_toggle_checks(
+        parent,
+        include_timestamp,
+        include_origin,
+        font_delta,
+        include_from,
+        include_to,
+    )
     for col in range(columns):
         parent.grid_columnconfigure(col, weight=1)
     for index, check in enumerate(checks):
@@ -1643,12 +2111,21 @@ def _build_toggle_strip(
     *,
     include_timestamp: bool = False,
     include_origin: bool = False,
+    include_from: bool = False,
+    include_to: bool = False,
     font_delta: int = 1,
     padx: int = 6,
     pady: int = 2,
 ) -> list[tk.Checkbutton]:
     """Create the channel (and optional timestamp/origin) checkboxes, reflowing to fit."""
-    checks = _make_toggle_checks(parent, include_timestamp, include_origin, font_delta)
+    checks = _make_toggle_checks(
+        parent,
+        include_timestamp,
+        include_origin,
+        font_delta,
+        include_from,
+        include_to,
+    )
 
     state: dict[str, Any] = {"sig": None}
 
@@ -1800,7 +2277,14 @@ def _open_settings() -> None:
     ).pack(anchor="w")
     strip = tk.Frame(body, background=bg)
     strip.pack(fill="x", pady=(2, 8))
-    _build_toggle_grid(strip, include_timestamp=True, include_origin=True, font_delta=0)
+    _build_toggle_grid(
+        strip,
+        include_timestamp=True,
+        include_origin=True,
+        include_from=True,
+        include_to=True,
+        font_delta=0,
+    )
 
     def _toggle_hide_boxes() -> None:
         hidden = not _boxes_hidden()
@@ -1814,6 +2298,79 @@ def _open_settings() -> None:
         font=_ui_font(0),
     )
     hide_boxes_btn.pack(anchor="w", pady=(0, 8))
+
+    tk.Label(
+        body,
+        text="Channel colors (chat log and Modern Overlay):",
+        background=bg,
+        foreground=fg,
+        font=_ui_font(0),
+    ).pack(anchor="w")
+    color_row = tk.Frame(body, background=bg)
+    color_row.pack(fill="x", pady=(2, 8))
+    color_buttons: dict[str, tk.Button] = {}
+
+    def _paint_swatch(channel: str, button: tk.Button) -> None:
+        color = _channel_color(channel)
+        ink = _contrast_on(color)
+        button.configure(
+            text=CHANNEL_LABELS[channel],
+            background=color,
+            foreground=ink,
+            activebackground=color,
+            activeforeground=ink,
+        )
+
+    def _pick_color(channel: str) -> None:
+        button = color_buttons.get(channel)
+        if button is None:
+            return
+        try:
+            chosen = colorchooser.askcolor(
+                color=_channel_color(channel),
+                title=f"{CHANNEL_LABELS[channel]} color",
+                parent=dlg,
+            )
+        except Exception:
+            logger.exception("Could not open the colour picker")
+            return
+        hex_color = chosen[1] if chosen else None
+        if not hex_color:
+            return
+        _set_channel_color(channel, str(hex_color))
+        _paint_swatch(channel, button)
+
+    for index, channel in enumerate(COLOR_CHANNELS):
+        button = tk.Button(
+            color_row,
+            command=lambda channel=channel: _pick_color(channel),
+            font=_ui_font(0),
+            width=10,
+            relief="flat",
+            bd=0,
+            highlightthickness=0,
+        )
+        button._salty_color_swatch = True  # type: ignore[attr-defined]
+        _paint_swatch(channel, button)
+        button.grid(row=index // 3, column=index % 3, sticky="ew", padx=4, pady=2)
+        color_buttons[channel] = button
+    for column in range(3):
+        color_row.grid_columnconfigure(column, weight=1)
+
+    log_actions = tk.Frame(body, background=bg)
+    log_actions.pack(anchor="w", fill="x", pady=(0, 8))
+    tk.Button(
+        log_actions,
+        text="Clear Chat logs",
+        command=_clear_chat_log,
+        font=_ui_font(0),
+    ).pack(side="left")
+    tk.Button(
+        log_actions,
+        text="Open Log Folder",
+        command=_open_log_folder,
+        font=_ui_font(0),
+    ).pack(side="left", padx=(8, 0))
 
     overlay_var = tk.BooleanVar(
         value=_cfg_bool(f"{CONFIG_PREFIX}_overlay", DEFAULT_OVERLAY_ENABLED)
@@ -1963,6 +2520,8 @@ def _open_settings() -> None:
         except Exception:
             pass
     _style_tree(dlg, bg, fg)
+    for channel, button in color_buttons.items():
+        _paint_swatch(channel, button)
     _theme_titlebar(dlg)
     _apply_stay_on_top(dlg)
 
@@ -1972,6 +2531,8 @@ def _open_settings() -> None:
         try:
             new_bg, new_fg = _theme_colors()
             _style_tree(dlg, new_bg, new_fg)
+            for channel, button in color_buttons.items():
+                _paint_swatch(channel, button)
             _theme_titlebar(dlg)
             _apply_stay_on_top(dlg)
         except Exception:
@@ -2056,6 +2617,9 @@ def _open_popout() -> None:
     tk.Button(bottom, text="Clear", command=_clear_messages, font=_ui_font(1)).pack(
         side="left"
     )
+    tk.Button(bottom, text="Options", command=_open_settings, font=_ui_font(1)).pack(
+        side="left", padx=(8, 0)
+    )
     freeze = tk.Checkbutton(
         bottom, text="Pause Chat", variable=_freeze_var, font=_ui_font(1)
     )
@@ -2125,7 +2689,20 @@ def _open_popout() -> None:
     # The canvas-drawn scrollbar follows the EDMC theme exactly (trough in the
     # theme background, thumb in the theme accent); a classic native scrollbar
     # keeps its light thumb on Windows and cannot be recoloured reliably.
-    text = tk.Text(container, wrap="word", state="disabled", height=16, width=64, spacing1=0, spacing2=0, spacing3=10)
+    text = tk.Text(
+        container,
+        wrap="word",
+        state="disabled",
+        height=16,
+        width=64,
+        spacing1=0,
+        spacing2=0,
+        spacing3=10,
+        relief="flat",
+        borderwidth=0,
+        highlightthickness=0,
+        cursor="arrow",
+    )
     scroll = ThemedScrollbar(
         container, command=text.yview, background=bg, foreground=fg
     )
@@ -2230,11 +2807,26 @@ def plugin_app(parent: tk.Frame) -> tk.Frame:
     # Fixed height (no vertical fill) so the panel stays compact instead of
     # stretching to fill the whole EDMC window; expand=True lets it grow
     # horizontally as the window is widened.
-    text = tk.Text(log_frame, wrap="word", state="disabled", height=4, width=34)
+    text = tk.Text(
+        log_frame,
+        wrap="word",
+        state="disabled",
+        height=4,
+        width=34,
+        relief="flat",
+        borderwidth=0,
+        highlightthickness=0,
+        cursor="arrow",
+    )
     text.pack(side="left", fill="both", expand=True)
     bg, fg = _theme_colors()
     scroll = ThemedScrollbar(
-        log_frame, command=text.yview, background=bg, foreground=fg
+        log_frame,
+        command=text.yview,
+        background=bg,
+        foreground=fg,
+        width=18,
+        min_thumb=32,
     )
     scroll.pack(side="right", fill="y")
     text.configure(yscrollcommand=scroll.set)
@@ -2245,6 +2837,7 @@ def plugin_app(parent: tk.Frame) -> tk.Frame:
     text.bind("<Button-1>", _on_chat_click)
     text.bind("<Double-Button-1>", _on_chat_double_click)
     text.bind("<Button-3>", _on_chat_menu)
+    _attach_hover_tip(text, HOVER_TIP_TEXT)
 
     _main_text = text
     _register_view(text)
@@ -2330,7 +2923,21 @@ def plugin_prefs(parent: nb.Notebook, cmdr: str, is_beta: bool) -> tk.Frame | No
         text="Show message origin (e.g. [Local], [System], \u2026)",
         variable=_origin_var,
         command=_on_origins_change,
-    ).grid(row=row, column=0, columnspan=4, sticky="w", pady=(0, 8))
+    ).grid(row=row, column=0, columnspan=4, sticky="w", pady=(0, 2))
+    row += 1
+
+    nb.Checkbutton(
+        frame,
+        text="From:",
+        variable=_from_var,
+        command=_on_from_change,
+    ).grid(row=row, column=0, sticky="w", pady=(0, 2))
+    nb.Checkbutton(
+        frame,
+        text="To:",
+        variable=_to_var,
+        command=_on_to_change,
+    ).grid(row=row, column=1, sticky="w", pady=(0, 2))
     row += 1
 
     chat_logging_var = tk.BooleanVar(value=_chat_logging_enabled())
@@ -2502,10 +3109,16 @@ def journal_entry(
         logger.debug("journal_entry received %s: %r", event, entry.get("Message"))
 
     if event == "SendText":
-        channel = _normalise_channel(entry.get("To_Localised") or entry.get("To"))
-        sender = cmdr or "You"
+        raw_to = entry.get("To_Localised") or entry.get("To")
+        channel = _normalise_channel(raw_to)
+        target = _private_peer(raw_to) if channel == "private" else ""
         _add_message(
-            channel, sender, entry.get("Message", ""), incoming=False, entry=entry
+            channel,
+            "Me",
+            entry.get("Message", ""),
+            incoming=False,
+            entry=entry,
+            target=target,
         )
 
     elif event == "ReceiveText":

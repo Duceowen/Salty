@@ -191,5 +191,157 @@ print(
 )
 assert sb.winfo_ismapped() and sb.winfo_width() > 1 and thumbs
 assert sb.itemcget(thumbs[0], "fill") == live_fg
+assert str(text.cget("cursor")) == "arrow"
+assert int(str(text.cget("highlightthickness"))) == 0
+assert str(text.cget("relief")) == "flat"
+assert find_button(salty._popout, "Options"), "pop-out Options button missing"
+assert find_button(salty._popout, "Clear"), "pop-out Clear button missing"
+assert find_button(salty._settings_win, "Clear Chat logs")
+assert find_button(salty._settings_win, "Open Log Folder")
+settings_checks = channel_labels(salty._settings_win)
+assert "From:" in settings_checks
+assert "To:" in settings_checks
+for label in ("Local", "System", "Private", "Wing", "Squadron", "Officer"):
+    assert find_button(salty._settings_win, label), label
+print("options, log buttons, From/To and colour swatches OK")
+
+assert salty.STARTUP_HINT_MS == 6000
+assert "Double Click for Options" in salty.HOVER_TIP_TEXT
+
+config_mod.config.set("salty_chat_logging", False)
+salty._messages.clear()
+
+
+def _entry(event, **fields):
+    fields["event"] = event
+    fields.setdefault("timestamp", "2026-10-16T12:00:00Z")
+    return fields
+
+
+salty.journal_entry(
+    "Cmdr Example",
+    False,
+    "Sol",
+    None,
+    _entry("SendText", To="Bob", Message="hello there"),
+    {},
+)
+sent = salty._messages[-1]
+assert sent["from"] == "Me" and sent["to"] == "Bob" and sent["incoming"] is False
+assert sent["channel"] == "private"
+sent_line = salty._format_prefix(sent)
+assert "[Private]" in sent_line
+assert "To: Bob" in sent_line
+assert sent_line.rstrip().endswith("Me:")
+assert "Cmdr Example" not in sent_line
+
+salty.journal_entry(
+    "Cmdr Example",
+    False,
+    "Sol",
+    None,
+    _entry("ReceiveText", Channel="player", From="Bob", Message="hi"),
+    {},
+)
+got = salty._messages[-1]
+assert got["from"] == "Bob" and got["to"] == "Me" and got["incoming"] is True
+got_line = salty._format_prefix(got)
+assert "[Private]" in got_line
+assert "From: Bob:" in got_line
+
+salty.journal_entry(
+    "Cmdr Example",
+    False,
+    "Sol",
+    None,
+    _entry("SendText", To="local", Message="in system"),
+    {},
+)
+local_sent = salty._messages[-1]
+assert local_sent["from"] == "Me" and local_sent["channel"] == "local"
+assert "Cmdr Example" not in salty._format_prefix(local_sent)
+
+salty._to_var.set(False)
+salty._from_var.set(False)
+assert "To:" not in salty._format_prefix(sent)
+assert salty._format_prefix(sent).rstrip().endswith("Me:")
+assert "From:" not in salty._format_prefix(got)
+assert "Bob:" in salty._format_prefix(got)
+salty._to_var.set(True)
+salty._from_var.set(True)
+print("private From/To and Me OK")
+
+parsed = salty._parse_chat_log_line("12:00:00\tprivate\tMe\tBob\tout\thello")
+assert parsed["from"] == "Me" and parsed["to"] == "Bob" and parsed["incoming"] is False
+legacy = salty._parse_chat_log_line("12:00:00\tlocal\tAnn\thi")
+assert legacy["incoming"] is False and legacy["to"] == "" and legacy["from"] == "Ann"
+print("chat log rows OK")
+
+wrapped = salty._wrap_overlay_text(
+    "This is a private message that should wrap onto more than one line cleanly"
+)
+wrap_lines = wrapped.split("\n")
+assert len(wrap_lines) >= 2
+assert all(len(line) <= 40 for line in wrap_lines)
+for word in (
+    "This is a private message that should wrap onto more than one line cleanly"
+).split():
+    assert any(word in line for line in wrap_lines)
+long_word = "Z" * 50
+long_wrap = salty._wrap_overlay_text(
+    f"Hello {long_word} friend plus several extra words so the line has to wrap"
+)
+assert any(long_word in line for line in long_wrap.split("\n"))
+assert all(len(line) <= max(40, len(long_word)) for line in long_wrap.split("\n"))
+body = salty._overlay_body(
+    "private",
+    "Bob",
+    "a fairly long incoming private note that will not fit on one overlay line",
+)
+assert body.startswith("From: Bob:")
+assert "\n" in body
+print("overlay wrap OK")
+
+salty._set_channel_color("private", "#112233")
+assert salty._channel_color("private") == "#112233"
+assert str(text.tag_cget("ch_private", "foreground")).lower() == "#112233"
+captured = []
+
+def _fake_send(payload):
+    captured.append(payload)
+
+salty._overlay_send = _fake_send
+salty._overlay_import_done = True
+salty._notify("private", "Bob", "colour me in")
+assert captured and captured[-1]["color"].lower() == "#112233"
+assert "From:" in captured[-1]["text"]
+print("overlay colour OK")
+
+holder = tk.Frame(root)
+holder.pack(fill="both", expand=True)
+salty.plugin_app(holder)
+root.update_idletasks()
+root.update()
+main = salty._main_text
+assert str(main.cget("cursor")) == "arrow"
+assert int(str(main.cget("highlightthickness"))) == 0
+bars = [w for w in salty._walk(holder) if isinstance(w, salty.ThemedScrollbar)]
+assert bars and any(
+    bar._min_thumb >= 32 and int(str(bar.cget("width"))) == 18 for bar in bars
+)
+print("main chat cursor, border and scrollbar OK")
+
+
+class _Click:
+    widget = main
+
+
+assert salty._dismiss_startup_hint_fn is not None
+salty._on_chat_click(_Click())
+assert salty._hint_shown is True
+assert salty._pending_click is not None
+salty._cancel_pending_click()
+print("startup hint click dismisses and arms the pop-out OK")
+
 root.destroy()
 print("ALL RUNTIME CHECKS PASS")

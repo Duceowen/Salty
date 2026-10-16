@@ -21,7 +21,16 @@ the [Modern Overlay](https://github.com/EDCD/EDMC-Plugin-Registry) plugin.
   its own filter toggles.
 - **Click controls on the main chat box**: single click opens the pop-out, double
   click opens **Settings**, right click shows both as menu items. A one-time hint
-  inside the chat box explains this for the first 10 seconds.
+  inside the chat box explains this for the first 6 seconds. Hovering the chat
+  box shows the same short tip. The chat box uses the normal arrow cursor and has
+  no border.
+- **Private messages** show who they are from and who they were sent to.
+  Incoming lines read `[Private] From: Name:`. Outgoing lines read
+  `[Private] To: Name Me:`. The local commander is always **Me**. **From:** and
+  **To:** can be turned off in Settings.
+- **Channel colors** for Local, System, Private, Wing, Squadron and Officer.
+  The same colours are used for Modern Overlay notifications. Overlay text wraps
+  at about 36 characters, on word boundaries.
 - **Chat logging** (on by default) appends every message to a log file next to
   EDMC's own logs, and the saved history is loaded back in on startup.
 - **Pause Chat** toggle (in the pop-out window) so the log stops auto-scrolling
@@ -44,6 +53,11 @@ Elite Dangerous uses several channel tokens; these are normalised as follows:
 | everything else          | Private              |
 
 `player`, `friend`, `voicechat` and direct messages all fall into **Private**.
+
+A received private message is shown as `[Private] From: <commander>:`.
+A sent private message is shown as `[Private] To: <commander> Me:`.
+The log file stores both ends on every private row (`from`, `to`, and `in` or `out`).
+Messages you send on any channel are attributed to **Me**, not your commander name.
 
 ## Install
 
@@ -70,27 +84,34 @@ Elite Dangerous uses several channel tokens; these are normalised as follows:
   | Double click | opens the **Settings** window |
   | Right click | menu with **Pop out window** and **Settings** |
 
-  A hint reading *"Single Click to Open Chat box. Double click for settings."* is
-  shown **inside the chat box** for the first **10 seconds**; the saved chat log
-  is loaded and displayed once that hint disappears. Live messages that arrive
-  during those 10 seconds are displayed straight away. The countdown only starts
-  when the chat box is actually on screen, so the hint is never missed while
-  EDMC is showing a different tab.
+  A hint reading *"Single Click to pop window out Double Click for Options."* is
+  shown **inside the chat box** for the first **6 seconds**. Clicking the chat box
+  before those 6 seconds are up removes the hint and opens the pop-out. The same
+  sentence is shown as a small tip while the pointer is over the chat box. The
+  saved chat log is loaded and displayed once that hint disappears. Live messages
+  that arrive during those 6 seconds are displayed straight away. The countdown
+  only starts when the chat box is actually on screen, so the hint is never missed
+  while EDMC is showing a different tab.
 
   While the pop-out is open, the main widget is replaced by a single line reading
   **"Chat Pop-out Active"** – the pop-out owns the full chat log. Closing the
   pop-out brings the live log back.
 
-- **Settings** – opens the themed Salty settings window (channel filters, timestamp
-  toggle, chat logging and all overlay options). Changes apply immediately. The
-  window is resizable; it opens sized and centred over EDMC, with a minimum size
-  that keeps every control visible. **Hide Boxes** removes the Show Messages
-  checkboxes from the pop-out. The button then reads **Show Boxes**. The choice
-  is saved, and the checkboxes in Settings stay available.
+- **Settings** – opens the themed Salty settings window (channel filters, **From:**
+  and **To:**, timestamp toggle, channel colours, chat logging and all overlay
+  options). Changes apply immediately. The window is resizable; it opens sized and
+  centred over EDMC, with a minimum size that keeps every control visible.
+  **Hide Boxes** removes the Show Messages checkboxes from the pop-out. The button
+  then reads **Show Boxes**. The choice is saved, and the checkboxes in Settings
+  stay available. **Clear Chat logs** asks for confirmation, then deletes
+  `SaltyChat.log` and the messages currently shown. **Open Log Folder** opens the
+  folder that contains that file so you can copy a backup.
 - **Window** (pop-out) – opens a larger copy of the full chat log, with its own
   channel + timestamp toggles along the bottom unless **Hide Boxes** is on.
   Close it any time; the main-window log keeps running.
-- **Clear** (pop-out) – asks for confirmation, then empties the log.
+- **Options** (pop-out) – opens the same Settings window.
+- **Clear** (pop-out) – asks for confirmation, then empties the chat window.
+  The saved log file is left in place; use **Clear Chat logs** to delete it.
 - **Pause Chat** (pop-out) – when ticked, the view stops jumping to the newest
   message.
 
@@ -164,6 +185,22 @@ shown. Turn it off from the **Settings** window or the Salty tab in
 
 ## Changelog
 
+### 1.1.0
+
+- Private messages show **From:** on incoming lines and **To:** plus the
+  recipient on outgoing lines. Both labels can be turned off in Settings.
+  The local commander is logged as **Me**.
+- The chat log file records who a private message is from and who it is to.
+- **Options** on the pop-out opens Settings. **Clear Chat logs** and
+  **Open Log Folder** are on that page. Clearing the pop-out chat still asks
+  first.
+- Channel colour pickers for Local, System, Private, Wing, Squadron and Officer.
+  Modern Overlay uses the same colours, and wraps notification text at about
+  36 characters without splitting words.
+- The startup hint lasts 6 seconds, and a click during that time closes it and
+  opens the pop-out. The main chat box uses the arrow cursor, has no border,
+  and its scrollbar thumb is larger.
+
 ### 1.0.2
 
 - **Hide Boxes.** Salty Settings has a Hide Boxes button under Show messages in.
@@ -211,7 +248,8 @@ from config import config
 
 # Channel visibility and notification toggles, e.g. 'salty_show_local',
 # 'salty_notify_local', plus 'salty_overlay', 'salty_timestamps',
-# 'salty_origins', 'salty_chat_logging' and 'salty_hide_boxes'.
+# 'salty_origins', 'salty_show_from', 'salty_show_to', 'salty_chat_logging',
+# 'salty_hide_boxes', and 'salty_color_local' (plus the other channel colours).
 show_local = config.get_bool("salty_show_local")
 ```
 
