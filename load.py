@@ -37,7 +37,7 @@ try:
 except Exception:  # pragma: no cover - theme is optional
     theme = None
 
-__version__ = "1.1.0"
+__version__ = "1.1.1"
 
 PLUGIN_DISPLAY_NAME = "Salty"
 PLUGIN_INTERNAL_NAME = "Salty"
@@ -117,8 +117,6 @@ OVERLAY_SIZES = ("normal", "large", "huge")
 
 DEFAULT_TIMESTAMPS = True
 DEFAULT_ORIGINS = True
-DEFAULT_SHOW_FROM = True
-DEFAULT_SHOW_TO = True
 DEFAULT_STAY_ON_TOP = False
 
 # Channels the player can recolour. NPC keeps its built-in colour.
@@ -134,6 +132,9 @@ DEFAULT_POPOUT_WIDTH = 560
 DEFAULT_POPOUT_HEIGHT = 360
 
 MAX_MESSAGES = 1000
+# The compact EDMC widget only shows the newest lines. The pop-out window and
+# the chat log file keep the full history, up to MAX_MESSAGES.
+MAIN_HISTORY_LIMIT = 30
 
 NOTIFY_ID_PREFIX = "salty-"
 
@@ -160,6 +161,9 @@ CLICK_ACTION_DELAY_MS = 500
 STARTUP_HINT_MS = 6000
 STARTUP_HINT_TEXT = "Single Click to pop window out Double Click for Options."
 HOVER_TIP_TEXT = "Single Click to pop window out Double Click for Options."
+# Shown in the main widget when it is scrolled to the top and older lines exist
+# beyond MAIN_HISTORY_LIMIT. A click still opens the pop-out.
+HISTORY_HINT_TEXT = "Click the box to expand for more history"
 
 # SendText/ReceiveText tokens that are channels, not commander names.
 _NOT_A_COMMANDER = {
@@ -197,14 +201,16 @@ _messages: list[dict[str, Any]] = []
 
 _main_frame: tk.Frame | None = None
 _main_text: tk.Text | None = None
+_history_hint: tk.Label | None = None
 _filter_vars: dict[str, tk.BooleanVar] = {}
 _timestamp_var: tk.BooleanVar | None = None
 _origin_var: tk.BooleanVar | None = None
-_from_var: tk.BooleanVar | None = None
-_to_var: tk.BooleanVar | None = None
 _freeze_var: tk.BooleanVar | None = None
 _topmost_var: tk.BooleanVar | None = None
 _views: list[tk.Text] = []
+# Set when the main window is rendered. Scroll handling reads it instead of
+# scanning the log on every thumb movement.
+_main_history_overflow = False
 _popout: tk.Toplevel | None = None
 _popout_toggles: tk.Frame | None = None
 _popout_chat: tk.Frame | None = None
@@ -286,14 +292,6 @@ def _origin_key() -> str:
     return f"{CONFIG_PREFIX}_origins"
 
 
-def _from_key() -> str:
-    return f"{CONFIG_PREFIX}_show_from"
-
-
-def _to_key() -> str:
-    return f"{CONFIG_PREFIX}_show_to"
-
-
 def _color_key(channel: str) -> str:
     return f"{CONFIG_PREFIX}_color_{channel}"
 
@@ -338,7 +336,7 @@ def _stay_on_top_enabled() -> bool:
 
 def _ensure_filter_vars() -> None:
     """Lazily create the shared show/timestamp/origin/freeze Tk variables (needs a Tk root)."""
-    global _timestamp_var, _origin_var, _from_var, _to_var, _freeze_var, _topmost_var
+    global _timestamp_var, _origin_var, _freeze_var, _topmost_var
     if not _filter_vars:
         for channel in CHANNELS:
             _filter_vars[channel] = tk.BooleanVar(
@@ -350,10 +348,6 @@ def _ensure_filter_vars() -> None:
         )
     if _origin_var is None:
         _origin_var = tk.BooleanVar(value=_cfg_bool(_origin_key(), DEFAULT_ORIGINS))
-    if _from_var is None:
-        _from_var = tk.BooleanVar(value=_cfg_bool(_from_key(), DEFAULT_SHOW_FROM))
-    if _to_var is None:
-        _to_var = tk.BooleanVar(value=_cfg_bool(_to_key(), DEFAULT_SHOW_TO))
     if _freeze_var is None:
         _freeze_var = tk.BooleanVar(value=False)
     if _topmost_var is None:
@@ -378,24 +372,6 @@ def _origins_shown() -> bool:
         except Exception:
             pass
     return _cfg_bool(_origin_key(), DEFAULT_ORIGINS)
-
-
-def _from_labels_shown() -> bool:
-    if _from_var is not None:
-        try:
-            return bool(_from_var.get())
-        except Exception:
-            pass
-    return _cfg_bool(_from_key(), DEFAULT_SHOW_FROM)
-
-
-def _to_labels_shown() -> bool:
-    if _to_var is not None:
-        try:
-            return bool(_to_var.get())
-        except Exception:
-            pass
-    return _cfg_bool(_to_key(), DEFAULT_SHOW_TO)
 
 
 def _valid_color(value: str) -> bool:
@@ -767,6 +743,7 @@ def _show_startup_hint() -> None:
                     box.after_cancel(handle)
                 except Exception:
                     pass
+        _dismiss_hover_tips()
         try:
             label.destroy()
         except Exception:
@@ -820,6 +797,9 @@ def _open_popout_deferred() -> None:
 
 def _on_chat_click(event: tk.Event) -> str:
     global _pending_click
+    # Returning "break" stops the tip's own button binding, and the pointer
+    # never leaves the chat box when the pop-out opens, so close the tip here.
+    _dismiss_hover_tips()
     _cancel_pending_click()
     # Tk may deliver <Button-1> and <Double-Button-1> for the same physical
     # press in either order, so ignore the trailing single click too.
@@ -839,11 +819,24 @@ def _on_chat_click(event: tk.Event) -> str:
 
 def _on_chat_double_click(event: tk.Event) -> str:
     global _suppress_until
+    _dismiss_hover_tips()
     _cancel_pending_click()
     _suppress_until = time.monotonic() + (CLICK_ACTION_DELAY_MS / 1000.0)
     _dismiss_startup_hint()
     _open_settings()
     return "break"
+
+
+_hover_tip_hiders: list[Any] = []
+
+
+def _dismiss_hover_tips() -> None:
+    """Close every hover tip, including one whose widget never received Leave."""
+    for hide in list(_hover_tip_hiders):
+        try:
+            hide()
+        except Exception:
+            pass
 
 
 def _attach_hover_tip(widget: tk.Widget, text: str) -> None:
@@ -866,6 +859,8 @@ def _attach_hover_tip(widget: tk.Widget, text: str) -> None:
                 win.destroy()
             except Exception:
                 pass
+
+    _hover_tip_hiders.append(_hide)
 
     def _reveal(event: tk.Event) -> None:
         state["after"] = None
@@ -933,6 +928,7 @@ def _build_chat_menu() -> tk.Menu:
 
 
 def _on_chat_menu(event: tk.Event) -> str:
+    _dismiss_hover_tips()
     menu = _build_chat_menu()
     try:
         menu.tk_popup(event.x_root, event.y_root)
@@ -1118,7 +1114,7 @@ def _overlay_line_count(text: str) -> int:
 def _overlay_body(channel: str, sender: str, message: str) -> str:
     sender = sender or ""
     message = message or ""
-    if channel == "private" and _from_labels_shown():
+    if channel == "private" and sender:
         raw = f"From: {sender}: {message}"
     else:
         raw = f"{sender}: {message}"
@@ -1179,16 +1175,11 @@ def _emit_overlay_stack(send) -> None:
 
 
 def _refresh_overlay_entries() -> None:
-    """Apply the current channel colours (and From: label) to live toasts."""
+    """Apply the current channel colours to live toasts."""
     if not _overlay_active:
         return
     for entry in _overlay_active:
-        channel = entry.get("channel") or ""
-        entry["color"] = _channel_color(channel)
-        entry["text"] = _overlay_body(
-            channel, entry.get("sender") or "", entry.get("message") or ""
-        )
-        entry["lines"] = _overlay_line_count(entry["text"])
+        entry["color"] = _channel_color(entry.get("channel") or "")
     send = _overlay_send
     if send is None:
         return
@@ -1251,26 +1242,28 @@ def _notify(channel: str, sender: str, message: str) -> None:
 def _format_prefix(item: dict[str, Any]) -> str:
     """Build the leader shown before the message text.
 
-    Private messages keep the ``[Private]`` channel tag. Incoming ones can add
-    ``From:`` after it, and outgoing ones can add ``To: <commander>``. The
-    local commander is stored as ``Me``.
+    Private messages keep the ``[Private]`` origin tag and use a direction:
+    ``[Private] Name > Me:`` incoming, ``[Private] Me > Name:`` outgoing.
+    Every other channel is unchanged. The local commander is stored as ``Me``.
     """
     label = CHANNEL_LABELS.get(item["channel"], item["channel"])
+    sender = str(item.get("from") or "")
+    channel = item.get("channel")
+    incoming = bool(item.get("incoming"))
     bits: list[str] = []
     if _timestamps_shown():
         bits.append(f"[{item['time']}]")
     if _origins_shown():
         bits.append(f"[{label}]")
-    prefix = (" ".join(bits) + " ") if bits else ""
-    sender = str(item.get("from") or "")
-    channel = item.get("channel")
-    incoming = bool(item.get("incoming"))
-    if channel == "private" and incoming and _from_labels_shown():
-        sender = f"From: {sender}"
-    if channel == "private" and not incoming and _to_labels_shown():
+    if channel == "private" and incoming and sender:
+        bits.append(f"{sender} > Me:")
+        return " ".join(bits) + " "
+    if channel == "private" and not incoming:
         target = str(item.get("to") or "").strip()
         if target:
-            return f"{prefix}To: {target} {sender}: "
+            bits.append(f"Me > {target}:")
+            return " ".join(bits) + " "
+    prefix = (" ".join(bits) + " ") if bits else ""
     return f"{prefix}{sender}: "
 
 
@@ -1283,11 +1276,35 @@ def _trim(text: tk.Text) -> None:
         pass
 
 
+def _filtered_messages() -> list[dict[str, Any]]:
+    return [item for item in _messages if _channel_shown(item["channel"])]
+
+
+def _items_for_view(text: tk.Text) -> list[dict[str, Any]]:
+    """Messages this widget should show.
+
+    The pop-out keeps the full filtered log. The main EDMC widget keeps only
+    the newest MAIN_HISTORY_LIMIT entries. Rendering the main widget also
+    records whether older lines exist, so scrolling does not scan the log.
+    """
+    global _main_history_overflow
+    items = _filtered_messages()
+    if text is _main_text:
+        _main_history_overflow = len(items) > MAIN_HISTORY_LIMIT
+        if _main_history_overflow:
+            return items[-MAIN_HISTORY_LIMIT:]
+    return items
+
+
+def _insert_item(text: tk.Text, item: dict[str, Any]) -> None:
+    text.insert("end", _format_prefix(item), (f"ch_{item['channel']}",))
+    text.insert("end", f"{item['message']}\n")
+
+
 def _append_item(text: tk.Text, item: dict[str, Any]) -> None:
     text.configure(state="normal")
     try:
-        text.insert("end", _format_prefix(item), (f"ch_{item['channel']}",))
-        text.insert("end", f"{item['message']}\n")
+        _insert_item(text, item)
         _trim(text)
         if not _is_frozen():
             text.see("end")
@@ -1296,12 +1313,20 @@ def _append_item(text: tk.Text, item: dict[str, Any]) -> None:
 
 
 def _render_all(text: tk.Text) -> None:
+    """Replace a view's contents in one edit, then scroll once."""
+    items = _items_for_view(text)
     text.configure(state="normal")
-    text.delete("1.0", "end")
-    text.configure(state="disabled")
-    for item in _messages:
-        if _channel_shown(item["channel"]):
-            _append_item(text, item)
+    try:
+        text.delete("1.0", "end")
+        for item in items:
+            _insert_item(text, item)
+        _trim(text)
+        if items and not _is_frozen():
+            text.see("end")
+    finally:
+        text.configure(state="disabled")
+    if text is _main_text:
+        _update_history_hint()
 
 
 def _add_message(
@@ -1336,9 +1361,14 @@ def _add_message(
         _write_chat_log(item)
 
     if _channel_shown(channel):
-        for text in _views:
+        for text in list(_views):
             try:
-                _append_item(text, item)
+                # Re-render the compact widget so it stays at the last 30
+                # messages, including when a message spans more than one line.
+                if text is _main_text:
+                    _render_all(text)
+                else:
+                    _append_item(text, item)
             except Exception:
                 logger.exception("Failed to append message to a chat view")
 
@@ -1352,6 +1382,63 @@ def _rerender_views() -> None:
             _render_all(text)
         except Exception:
             logger.exception("Failed to re-render a chat view")
+
+
+def _install_history_hint(box: tk.Text) -> None:
+    """Create the top-of-log note. It stays hidden until the view is at the top."""
+    global _history_hint
+    bg, fg = _theme_colors()
+    label = tk.Label(
+        box,
+        text=HISTORY_HINT_TEXT,
+        background=bg,
+        foreground=fg,
+        font=_ui_font(0),
+        padx=6,
+        pady=2,
+        relief="flat",
+        bd=0,
+        justify="center",
+        wraplength=220,
+        cursor="arrow",
+    )
+    label.bind("<Button-1>", _on_chat_click)
+    label.bind("<Double-Button-1>", _on_chat_double_click)
+    label.bind("<Button-3>", _on_chat_menu)
+    _attach_hover_tip(label, HOVER_TIP_TEXT)
+    _history_hint = label
+
+
+def _update_history_hint(first: float | None = None) -> None:
+    """Show the expand note only at the top of a main log that has older lines.
+
+    The pop-out placeholder is not in ``_views``, so the note stays hidden
+    while that window owns the full history.
+    """
+    label = _history_hint
+    text = _main_text
+    if label is None or text is None:
+        return
+    show = False
+    try:
+        if text in _views and _main_history_overflow:
+            if first is None:
+                first = float(text.yview()[0])
+            show = first <= 0.002
+    except Exception:
+        show = False
+    try:
+        placed = label.winfo_manager() == "place"
+        if show:
+            if not placed:
+                bg, fg = _theme_colors()
+                label.configure(background=bg, foreground=fg)
+                label.place(relx=0.5, rely=0.0, anchor="n")
+                label.lift()
+        elif placed:
+            label.place_forget()
+    except Exception:
+        pass
 
 
 def _themed_confirm(parent: tk.Misc, message: str) -> bool:
@@ -1465,10 +1552,10 @@ def _confirm_clear() -> bool:
     return _themed_confirm(_confirm_parent(), "Clear the chat window?")
 
 
-def _clear_messages() -> None:
-    if not _confirm_clear():
-        return
-    _messages.clear()
+def _blank_views() -> None:
+    """Empty every live chat view and drop the cached history-note flag."""
+    global _main_history_overflow
+    _main_history_overflow = False
     for text in _views:
         try:
             text.configure(state="normal")
@@ -1476,6 +1563,14 @@ def _clear_messages() -> None:
             text.configure(state="disabled")
         except Exception:
             pass
+    _update_history_hint()
+
+
+def _clear_messages() -> None:
+    if not _confirm_clear():
+        return
+    _messages.clear()
+    _blank_views()
 
 
 def _confirm_clear_log() -> bool:
@@ -1498,13 +1593,7 @@ def _clear_chat_log() -> None:
         return
     _history_pending.clear()
     _messages.clear()
-    for text in _views:
-        try:
-            text.configure(state="normal")
-            text.delete("1.0", "end")
-            text.configure(state="disabled")
-        except Exception:
-            pass
+    _blank_views()
 
 
 def _open_log_folder() -> None:
@@ -1570,6 +1659,37 @@ def _walk(widget: tk.Widget):
         return
     for child in children:
         yield from _walk(child)
+
+
+def scrollbar_thumb_box(
+    first: float, last: float, height: int, min_thumb: int
+) -> tuple[int, int] | None:
+    """Return ``(top, bottom)`` for the thumb, or None when the content fits.
+
+    The old placement grew the thumb only downward from ``first * height``.
+    On the short main-window track, a log pinned to the end left a couple of
+    pixels and the thumb looked like an underscore. The span is chosen first,
+    then slid along the track, so the bottom of the log still shows a full
+    indicator with a little trough left visible.
+    """
+    if height <= 1:
+        return None
+    visible = last - first
+    if visible >= 0.999:
+        return None
+    span = min(height, max(int(min_thumb), int(visible * height)))
+    if height > 8:
+        span = min(span, height - 4)
+    span = max(1, span)
+    travel = max(0, height - span)
+    if last >= 0.999:
+        top = travel
+    elif first <= 0.001:
+        top = 0
+    else:
+        top = int((first / max(0.001, 1.0 - visible)) * travel)
+        top = max(0, min(travel, top))
+    return top, top + span
 
 
 class ThemedScrollbar(tk.Canvas):
@@ -1640,14 +1760,12 @@ class ThemedScrollbar(tk.Canvas):
         h = self.winfo_height()
         if h <= 1 or w <= 1:
             return
-        if self._last - self._first >= 0.999:
+        box = scrollbar_thumb_box(self._first, self._last, h, self._min_thumb)
+        if box is None:
             self._top = 0
             self._bottom = h
             return
-        top = int(self._first * h)
-        bottom = int(self._last * h)
-        if bottom - top < self._min_thumb:
-            bottom = min(h, top + self._min_thumb)
+        top, bottom = box
         self._top = top
         self._bottom = bottom
         color = self._thumb_active if self._drag else self._thumb
@@ -1678,7 +1796,9 @@ class ThemedScrollbar(tk.Canvas):
     def _move_to(self, top, height) -> None:
         if not self.command:
             return
-        frac = max(0.0, min(1.0, top / height))
+        span = max(1, self._bottom - self._top)
+        travel = max(1, height - span)
+        frac = max(0.0, min(1.0, top / travel))
         self.command("moveto", frac)
 
 
@@ -1955,6 +2075,7 @@ def _set_popout_active(active: bool) -> None:
             if text not in _views:
                 _views.append(text)
             _render_all(text)
+        _update_history_hint()
     except Exception:
         logger.exception("Failed to update the main chat widget")
 
@@ -1986,32 +2107,13 @@ def _on_origins_change() -> None:
     _rerender_views()
 
 
-def _on_from_change() -> None:
-    try:
-        config.set(_from_key(), _from_labels_shown())
-    except Exception:
-        logger.exception("Failed to persist From setting")
-    _rerender_views()
-    _refresh_overlay_entries()
-
-
-def _on_to_change() -> None:
-    try:
-        config.set(_to_key(), _to_labels_shown())
-    except Exception:
-        logger.exception("Failed to persist To setting")
-    _rerender_views()
-
-
 def _make_toggle_checks(
     parent: tk.Widget,
     include_timestamp: bool,
     include_origin: bool,
     font_delta: int,
-    include_from: bool = False,
-    include_to: bool = False,
 ) -> list[tk.Checkbutton]:
-    """Create the channel (and optional timestamp/origin/from/to) checkboxes."""
+    """Create the channel (and optional timestamp/origin) checkboxes."""
     _ensure_filter_vars()
     checks: list[tk.Checkbutton] = []
     for channel in CHANNELS:
@@ -2047,28 +2149,6 @@ def _make_toggle_checks(
                 anchor="w",
             )
         )
-    if include_from:
-        checks.append(
-            tk.Checkbutton(
-                parent,
-                text="From:",
-                variable=_from_var,
-                command=_on_from_change,
-                font=_ui_font(font_delta),
-                anchor="w",
-            )
-        )
-    if include_to:
-        checks.append(
-            tk.Checkbutton(
-                parent,
-                text="To:",
-                variable=_to_var,
-                command=_on_to_change,
-                font=_ui_font(font_delta),
-                anchor="w",
-            )
-        )
     return checks
 
 
@@ -2077,8 +2157,6 @@ def _build_toggle_grid(
     *,
     include_timestamp: bool = False,
     include_origin: bool = False,
-    include_from: bool = False,
-    include_to: bool = False,
     columns: int = 3,
     font_delta: int = 0,
     padx: int = 6,
@@ -2090,8 +2168,6 @@ def _build_toggle_grid(
         include_timestamp,
         include_origin,
         font_delta,
-        include_from,
-        include_to,
     )
     for col in range(columns):
         parent.grid_columnconfigure(col, weight=1)
@@ -2103,65 +2179,6 @@ def _build_toggle_grid(
             padx=padx,
             pady=pady,
         )
-    return checks
-
-
-def _build_toggle_strip(
-    parent: tk.Widget,
-    *,
-    include_timestamp: bool = False,
-    include_origin: bool = False,
-    include_from: bool = False,
-    include_to: bool = False,
-    font_delta: int = 1,
-    padx: int = 6,
-    pady: int = 2,
-) -> list[tk.Checkbutton]:
-    """Create the channel (and optional timestamp/origin) checkboxes, reflowing to fit."""
-    checks = _make_toggle_checks(
-        parent,
-        include_timestamp,
-        include_origin,
-        font_delta,
-        include_from,
-        include_to,
-    )
-
-    state: dict[str, Any] = {"sig": None}
-
-    def _layout(_event=None) -> None:
-        try:
-            avail = parent.winfo_width()
-        except Exception:
-            return
-        if avail <= 1 or not checks:
-            return
-        row = col = cell = 0
-        placements = []
-        for check in checks:
-            width = check.winfo_reqwidth() + padx * 2
-            if col > 0 and cell + width > avail:
-                row += 1
-                col = 0
-                cell = 0
-            placements.append((check, row, col))
-            cell += width
-            col += 1
-        sig = tuple((c, r, cc) for c, r, cc in placements)
-        if state["sig"] == sig:
-            return
-        state["sig"] = sig
-        for check, r, c in placements:
-            check.grid_configure(row=r, column=c, sticky="w", padx=padx, pady=pady)
-
-    for check in checks:
-        check.grid(row=0, column=0, sticky="w", padx=padx, pady=pady)
-    parent.bind("<Configure>", _layout, add="+")
-    try:
-        parent.after_idle(_layout)
-        parent.after(200, _layout)
-    except Exception:
-        pass
     return checks
 
 
@@ -2281,8 +2298,6 @@ def _open_settings() -> None:
         strip,
         include_timestamp=True,
         include_origin=True,
-        include_from=True,
-        include_to=True,
         font_delta=0,
     )
 
@@ -2573,6 +2588,7 @@ def _open_settings() -> None:
 def _open_popout() -> None:
     global _popout, _popout_toggles, _popout_chat
 
+    _dismiss_hover_tips()
     if _popout is not None:
         try:
             if _popout.winfo_exists():
@@ -2829,7 +2845,16 @@ def plugin_app(parent: tk.Frame) -> tk.Frame:
         min_thumb=32,
     )
     scroll.pack(side="right", fill="y")
-    text.configure(yscrollcommand=scroll.set)
+
+    def _on_main_scroll(first: str, last: str) -> None:
+        scroll.set(first, last)
+        try:
+            at = float(first)
+        except Exception:
+            at = None
+        _update_history_hint(at)
+
+    text.configure(yscrollcommand=_on_main_scroll)
     _tag_text(text)
 
     # No button strip: a single click opens the pop-out, a double click opens
@@ -2840,6 +2865,7 @@ def plugin_app(parent: tk.Frame) -> tk.Frame:
     _attach_hover_tip(text, HOVER_TIP_TEXT)
 
     _main_text = text
+    _install_history_hint(text)
     _register_view(text)
 
     if theme is not None:
@@ -2924,20 +2950,6 @@ def plugin_prefs(parent: nb.Notebook, cmdr: str, is_beta: bool) -> tk.Frame | No
         variable=_origin_var,
         command=_on_origins_change,
     ).grid(row=row, column=0, columnspan=4, sticky="w", pady=(0, 2))
-    row += 1
-
-    nb.Checkbutton(
-        frame,
-        text="From:",
-        variable=_from_var,
-        command=_on_from_change,
-    ).grid(row=row, column=0, sticky="w", pady=(0, 2))
-    nb.Checkbutton(
-        frame,
-        text="To:",
-        variable=_to_var,
-        command=_on_to_change,
-    ).grid(row=row, column=1, sticky="w", pady=(0, 2))
     row += 1
 
     chat_logging_var = tk.BooleanVar(value=_chat_logging_enabled())

@@ -18,16 +18,18 @@ the [Modern Overlay](https://github.com/EDCD/EDMC-Plugin-Registry) plugin.
   **Hide Boxes** in Salty Settings removes that row from the pop-out.
 - **On-screen notifications** for incoming messages, per channel, delivered via Modern Overlay.
 - **Pop-out window** for a larger, resizable chat view with the full chat log and
-  its own filter toggles.
+  its own filter toggles. The main window shows the last 30 messages. Scroll
+  that log to the top and, when older messages exist, it tells you to click the
+  box for the rest.
 - **Click controls on the main chat box**: single click opens the pop-out, double
   click opens **Settings**, right click shows both as menu items. A one-time hint
   inside the chat box explains this for the first 6 seconds. Hovering the chat
   box shows the same short tip. The chat box uses the normal arrow cursor and has
   no border.
-- **Private messages** show who they are from and who they were sent to.
-  Incoming lines read `[Private] From: Name:`. Outgoing lines read
-  `[Private] To: Name Me:`. The local commander is always **Me**. **From:** and
-  **To:** can be turned off in Settings.
+- **Private messages** keep the **[Private]** origin tag and show direction.
+  Incoming lines read `[Private] Name > Me:`. Outgoing lines read
+  `[Private] Me > Name:`. Other channels are unchanged. The local commander is
+  always **Me**.
 - **Channel colors** for Local, System, Private, Wing, Squadron and Officer.
   The same colours are used for Modern Overlay notifications. Overlay text wraps
   at about 36 characters, on word boundaries.
@@ -54,8 +56,8 @@ Elite Dangerous uses several channel tokens; these are normalised as follows:
 
 `player`, `friend`, `voicechat` and direct messages all fall into **Private**.
 
-A received private message is shown as `[Private] From: <commander>:`.
-A sent private message is shown as `[Private] To: <commander> Me:`.
+A received private message is shown as `[Private] <commander> > Me:`.
+A sent private message is shown as `[Private] Me > <commander>:`.
 The log file stores both ends on every private row (`from`, `to`, and `in` or `out`).
 Messages you send on any channel are attributed to **Me**, not your commander name.
 
@@ -75,7 +77,11 @@ Messages you send on any channel are attributed to **Me**, not your commander na
 
 ## Usage
 
-- **Main window** – the compact log lists chat as it happens. The widget itself is
+- **Main window** – the compact log lists the last 30 messages. Older messages
+  stay in the chat log file and in the pop-out window. The scrollbar thumb is a
+  full indicator, including when the log is sitting on the newest line. Scroll
+  to the top and, when there is more history, the box says *"Click the box to
+  expand for more history."* Clicking it opens the pop-out. The widget itself is
   a launcher rather than a button strip:
 
   | Action | Result |
@@ -97,9 +103,9 @@ Messages you send on any channel are attributed to **Me**, not your commander na
   **"Chat Pop-out Active"** – the pop-out owns the full chat log. Closing the
   pop-out brings the live log back.
 
-- **Settings** – opens the themed Salty settings window (channel filters, **From:**
-  and **To:**, timestamp toggle, channel colours, chat logging and all overlay
-  options). Changes apply immediately. The window is resizable; it opens sized and
+- **Settings** – opens the themed Salty settings window (channel filters,
+  timestamp toggle, channel colours, chat logging and all overlay options).
+  Changes apply immediately. The window is resizable; it opens sized and
   centred over EDMC, with a minimum size that keeps every control visible.
   **Hide Boxes** removes the Show Messages checkboxes from the pop-out. The button
   then reads **Show Boxes**. The choice is saved, and the checkboxes in Settings
@@ -185,6 +191,22 @@ shown. Turn it off from the **Settings** window or the Salty tab in
 
 ## Changelog
 
+### 1.1.1
+
+- The main-window scrollbar thumb stays a full indicator when the log is at
+  the bottom, instead of collapsing into a short dash.
+- The main window shows the last 30 messages. The pop-out and `SaltyChat.log`
+  keep the full history.
+- Scrolling that main log to the top, when older messages exist, tells you to
+  click the box to expand for more history.
+- Private lines keep the **[Private]** tag and use a direction:
+  `[Private] Name > Me:` incoming and `[Private] Me > Name:` outgoing.
+  Other channels stay as they are.
+- The hover tip closes when the chat box is clicked, including when that click
+  opens the pop-out.
+- The main window redraws its visible lines in one pass. Scrolling uses a
+  cached flag to decide whether the history note should show.
+
 ### 1.1.0
 
 - Private messages show **From:** on incoming lines and **To:** plus the
@@ -248,7 +270,7 @@ from config import config
 
 # Channel visibility and notification toggles, e.g. 'salty_show_local',
 # 'salty_notify_local', plus 'salty_overlay', 'salty_timestamps',
-# 'salty_origins', 'salty_show_from', 'salty_show_to', 'salty_chat_logging',
+# 'salty_origins', 'salty_chat_logging',
 # 'salty_hide_boxes', and 'salty_color_local' (plus the other channel colours).
 show_local = config.get_bool("salty_show_local")
 ```

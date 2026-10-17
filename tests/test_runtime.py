@@ -103,19 +103,15 @@ def channel_labels(parent):
     return found
 
 
-strip = tk.Frame(root)
-salty._build_toggle_strip(
-    strip, include_timestamp=True, include_origin=True, font_delta=1
-)
 grid = tk.Frame(root)
 salty._build_toggle_grid(
     grid, include_timestamp=True, include_origin=True, font_delta=0
 )
-for name, got in (("strip", channel_labels(strip)),
-                  ("grid", channel_labels(grid))):
-    for label in salty.CHANNEL_LABELS.values():
-        assert label in got, (name, label)
-print("toggle UIs list all channels OK")
+got = channel_labels(grid)
+for label in salty.CHANNEL_LABELS.values():
+    assert label in got, label
+assert not hasattr(salty, "_build_toggle_strip")
+print("toggle UI lists all channels OK")
 
 # real pop-out build: scrollbar must pack before the text and stay mapped
 # with a themed thumb, even when the text demands more width than fits
@@ -199,11 +195,11 @@ assert find_button(salty._popout, "Clear"), "pop-out Clear button missing"
 assert find_button(salty._settings_win, "Clear Chat logs")
 assert find_button(salty._settings_win, "Open Log Folder")
 settings_checks = channel_labels(salty._settings_win)
-assert "From:" in settings_checks
-assert "To:" in settings_checks
+assert "From:" not in settings_checks
+assert "To:" not in settings_checks
 for label in ("Local", "System", "Private", "Wing", "Squadron", "Officer"):
     assert find_button(salty._settings_win, label), label
-print("options, log buttons, From/To and colour swatches OK")
+print("options, log buttons and colour swatches OK")
 
 assert salty.STARTUP_HINT_MS == 6000
 assert "Double Click for Options" in salty.HOVER_TIP_TEXT
@@ -230,9 +226,8 @@ sent = salty._messages[-1]
 assert sent["from"] == "Me" and sent["to"] == "Bob" and sent["incoming"] is False
 assert sent["channel"] == "private"
 sent_line = salty._format_prefix(sent)
-assert "[Private]" in sent_line
-assert "To: Bob" in sent_line
-assert sent_line.rstrip().endswith("Me:")
+assert sent_line.endswith("[Private] Me > Bob: "), sent_line
+assert "To:" not in sent_line
 assert "Cmdr Example" not in sent_line
 
 salty.journal_entry(
@@ -246,8 +241,8 @@ salty.journal_entry(
 got = salty._messages[-1]
 assert got["from"] == "Bob" and got["to"] == "Me" and got["incoming"] is True
 got_line = salty._format_prefix(got)
-assert "[Private]" in got_line
-assert "From: Bob:" in got_line
+assert got_line.endswith("[Private] Bob > Me: "), got_line
+assert "From:" not in got_line
 
 salty.journal_entry(
     "Cmdr Example",
@@ -259,17 +254,11 @@ salty.journal_entry(
 )
 local_sent = salty._messages[-1]
 assert local_sent["from"] == "Me" and local_sent["channel"] == "local"
-assert "Cmdr Example" not in salty._format_prefix(local_sent)
-
-salty._to_var.set(False)
-salty._from_var.set(False)
-assert "To:" not in salty._format_prefix(sent)
-assert salty._format_prefix(sent).rstrip().endswith("Me:")
-assert "From:" not in salty._format_prefix(got)
-assert "Bob:" in salty._format_prefix(got)
-salty._to_var.set(True)
-salty._from_var.set(True)
-print("private From/To and Me OK")
+local_line = salty._format_prefix(local_sent)
+assert "[Local]" in local_line
+assert ">" not in local_line
+assert "Cmdr Example" not in local_line
+print("private direction and Me OK")
 
 parsed = salty._parse_chat_log_line("12:00:00\tprivate\tMe\tBob\tout\thello")
 assert parsed["from"] == "Me" and parsed["to"] == "Bob" and parsed["incoming"] is False
@@ -319,7 +308,7 @@ print("overlay colour OK")
 
 holder = tk.Frame(root)
 holder.pack(fill="both", expand=True)
-salty.plugin_app(holder)
+salty.plugin_app(holder).pack(fill="x")
 root.update_idletasks()
 root.update()
 main = salty._main_text
@@ -330,6 +319,26 @@ assert bars and any(
     bar._min_thumb >= 32 and int(str(bar.cget("width"))) == 18 for bar in bars
 )
 print("main chat cursor, border and scrollbar OK")
+
+# A log pinned to the bottom of a short track used to leave a 2px dash.
+pinned = salty.scrollbar_thumb_box(0.95, 1.0, 48, 32)
+assert pinned == (16, 48), pinned
+at_top = salty.scrollbar_thumb_box(0.0, 0.05, 48, 32)
+assert at_top == (0, 32), at_top
+assert salty.scrollbar_thumb_box(0.0, 1.0, 48, 32) is None
+middle = salty.scrollbar_thumb_box(0.40, 0.50, 100, 32)
+assert middle is not None and 0 < middle[0] < middle[1] < 100, middle
+bar = next(b for b in bars if b._min_thumb >= 32)
+root.update_idletasks()
+root.update()
+bar.set(0.95, 1.0)
+root.update_idletasks()
+drawn = bar.find_withtag("thumb")
+assert drawn, bar.winfo_height()
+_x1, y1, _x2, y2 = bar.coords(drawn[0])
+assert y2 - y1 >= 28, (y1, y2, bar.winfo_height())
+assert y2 >= bar.winfo_height() - 3
+print("scrollbar thumb stays an indicator when pinned to the bottom OK")
 
 
 class _Click:
@@ -342,6 +351,70 @@ assert salty._hint_shown is True
 assert salty._pending_click is not None
 salty._cancel_pending_click()
 print("startup hint click dismisses and arms the pop-out OK")
+
+
+def _floating_tips():
+    found = []
+    for widget in root.winfo_children():
+        if isinstance(widget, tk.Toplevel):
+            try:
+                if int(widget.wm_overrideredirect()):
+                    found.append(widget)
+            except Exception:
+                pass
+    return found
+
+
+main.event_generate("<Enter>", x=8, y=8, rootx=180, rooty=180)
+deadline = salty.time.monotonic() + 0.8
+while salty.time.monotonic() < deadline and not _floating_tips():
+    root.update()
+assert _floating_tips(), "hover tip did not open"
+main.event_generate("<Button-1>", x=8, y=8)
+root.update()
+assert not _floating_tips(), "hover tip stayed after the click that opens the pop-out"
+salty._cancel_pending_click()
+print("hover tip closes when the chat box is clicked OK")
+
+for i in range(40):
+    salty.journal_entry(
+        "Cmdr Example",
+        False,
+        "Sol",
+        None,
+        _entry("SendText", To="local", Message=f"hist {i:02d}"),
+        {},
+    )
+main_body = main.get("1.0", "end")
+assert "hist 39" in main_body and "hist 10" in main_body
+assert "hist 09" not in main_body
+pop_body = text.get("1.0", "end")
+assert "hist 00" in pop_body and "hist 39" in pop_body
+hint = salty._history_hint
+assert hint is not None
+assert str(hint.cget("text")) == salty.HISTORY_HINT_TEXT
+root.update_idletasks()
+root.update()
+assert hint.winfo_manager() == ""
+main.yview_moveto(0)
+root.update_idletasks()
+root.update()
+assert hint.winfo_ismapped(), main.yview()
+salty._on_chat_click(type("E", (), {"widget": hint})())
+assert salty._pending_click is not None
+salty._cancel_pending_click()
+salty._set_popout_active(True)
+root.update_idletasks()
+assert salty.POPOUT_ACTIVE_TEXT in main.get("1.0", "end")
+assert hint.winfo_manager() == ""
+salty._set_popout_active(False)
+salty._messages[:] = salty._messages[-salty.MAIN_HISTORY_LIMIT :]
+salty._render_all(main)
+main.yview_moveto(0)
+root.update_idletasks()
+root.update()
+assert hint.winfo_manager() == ""
+print("main window keeps the last 30 and hints at the top OK")
 
 root.destroy()
 print("ALL RUNTIME CHECKS PASS")
