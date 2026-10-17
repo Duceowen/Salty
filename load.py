@@ -135,6 +135,10 @@ MAX_MESSAGES = 1000
 # The compact EDMC widget only shows the newest lines. The pop-out window and
 # the chat log file keep the full history, up to MAX_MESSAGES.
 MAIN_HISTORY_LIMIT = 30
+# The compact EDMC widget shows at most this many chat lines before it scrolls.
+# It shrinks to fit a short or empty log so it does not leave a tall blank gap,
+# and grows again as messages arrive.
+MAIN_TEXT_MAX_LINES = 4
 
 NOTIFY_ID_PREFIX = "salty-"
 
@@ -161,6 +165,10 @@ CLICK_ACTION_DELAY_MS = 500
 STARTUP_HINT_MS = 6000
 STARTUP_HINT_TEXT = "Single Click to pop window out Double Click for Options."
 HOVER_TIP_TEXT = "Single Click to pop window out Double Click for Options."
+# The hover tip waits this long after the pointer enters before it appears,
+# then hides itself this long after it appears even if the pointer stays put.
+HOVER_TIP_DELAY_MS = 1000
+HOVER_TIP_LINGER_MS = 6000
 # Shown in the main widget when it is scrolled to the top and older lines exist
 # beyond MAIN_HISTORY_LIMIT. A click still opens the pop-out.
 HISTORY_HINT_TEXT = "Click the box to expand for more history"
@@ -201,6 +209,9 @@ _messages: list[dict[str, Any]] = []
 
 _main_frame: tk.Frame | None = None
 _main_text: tk.Text | None = None
+# True while the one-time startup hint overlay is on screen, so the chat box
+# keeps its height until the hint is gone.
+_startup_hint_up = False
 _history_hint: tk.Label | None = None
 _filter_vars: dict[str, tk.BooleanVar] = {}
 _timestamp_var: tk.BooleanVar | None = None
@@ -686,18 +697,21 @@ def _show_startup_hint() -> None:
     floating window, so it always appears exactly where the click controls it
     describes actually are. A click before the timer ends removes it at once.
     """
-    global _hint_started, _dismiss_startup_hint_fn
+    global _hint_started, _dismiss_startup_hint_fn, _startup_hint_up
 
     if _hint_started:
         return
     _hint_started = True
+    _startup_hint_up = True
 
     def _finish() -> None:
-        global _hint_shown, _dismiss_startup_hint_fn
+        global _hint_shown, _dismiss_startup_hint_fn, _startup_hint_up
         _dismiss_startup_hint_fn = None
         _hint_shown = True
+        _startup_hint_up = False
         logger.debug("Salty startup hint dismissed; loading the saved chat log")
         _flush_startup_history()
+        _fit_main_text_height()
 
     box = _main_text
     if box is None:
@@ -841,17 +855,25 @@ def _dismiss_hover_tips() -> None:
 
 def _attach_hover_tip(widget: tk.Widget, text: str) -> None:
     """Show a small hover tip. The tip window hangs off the app root, not the
-    plugin frame, so EDMC's theme walk never finds a Toplevel in the plugin."""
-    state: dict[str, Any] = {"win": None, "after": None}
+    plugin frame, so EDMC's theme walk never finds a Toplevel in the plugin.
 
-    def _hide(_event: tk.Event | None = None) -> None:
-        handle = state.get("after")
-        state["after"] = None
+    The tip waits HOVER_TIP_DELAY_MS before it appears and hides itself after
+    HOVER_TIP_LINGER_MS even if the pointer never leaves the widget.
+    """
+    state: dict[str, Any] = {"win": None, "after": None, "linger": None}
+
+    def _cancel(handle: Any) -> None:
         if handle is not None:
             try:
                 widget.after_cancel(handle)
             except Exception:
                 pass
+
+    def _hide(_event: tk.Event | None = None) -> None:
+        _cancel(state.get("after"))
+        _cancel(state.get("linger"))
+        state["after"] = None
+        state["linger"] = None
         win = state.get("win")
         state["win"] = None
         if win is not None:
@@ -896,11 +918,15 @@ def _attach_hover_tip(widget: tk.Widget, text: str) -> None:
             win.geometry(f"+{event.x_root + 14}+{event.y_root + 18}")
         except Exception:
             pass
+        try:
+            state["linger"] = widget.after(HOVER_TIP_LINGER_MS, _hide)
+        except Exception:
+            pass
 
     def _show(event: tk.Event) -> None:
         _hide()
         try:
-            state["after"] = widget.after(350, lambda: _reveal(event))
+            state["after"] = widget.after(HOVER_TIP_DELAY_MS, lambda: _reveal(event))
         except Exception:
             _reveal(event)
 
@@ -1276,6 +1302,34 @@ def _trim(text: tk.Text) -> None:
         pass
 
 
+def _fit_main_text_height() -> None:
+    """Shrink the chat box to its content, up to MAIN_TEXT_MAX_LINES.
+
+    An almost empty log would otherwise sit inside a fixed tall box with a
+    blank lower gap. The box grows line by line as messages arrive and scrolls
+    once it reaches the cap, so no line is clipped and the scrollbar stays.
+    """
+    text = _main_text
+    if text is None or _startup_hint_up:
+        return
+    try:
+        if not text.winfo_exists() or not text.winfo_ismapped():
+            return
+        if text.winfo_width() <= 1:
+            return
+        content = int(text.count("1.0", "end", "displaylines")[0]) - 1
+    except Exception:
+        return
+    if content < 0:
+        content = 0
+    want = max(1, min(content, MAIN_TEXT_MAX_LINES))
+    try:
+        if int(text.cget("height")) != want:
+            text.configure(height=want)
+    except Exception:
+        pass
+
+
 def _filtered_messages() -> list[dict[str, Any]]:
     return [item for item in _messages if _channel_shown(item["channel"])]
 
@@ -1327,6 +1381,7 @@ def _render_all(text: tk.Text) -> None:
         text.configure(state="disabled")
     if text is _main_text:
         _update_history_hint()
+        _fit_main_text_height()
 
 
 def _add_message(
@@ -2820,14 +2875,15 @@ def plugin_app(parent: tk.Frame) -> tk.Frame:
     log_frame = tk.Frame(_main_frame)
     log_frame.pack(fill="x", expand=False, padx=2, pady=2)
 
-    # Fixed height (no vertical fill) so the panel stays compact instead of
-    # stretching to fill the whole EDMC window; expand=True lets it grow
-    # horizontally as the window is widened.
+    # The box never fills the window vertically (the frame above packs it with
+    # fill="x"). It starts at the cap and _fit_main_text_height shrinks it to
+    # its content, so an almost empty log leaves no tall blank gap later.
+    # expand=True lets it grow horizontally as the window is widened.
     text = tk.Text(
         log_frame,
         wrap="word",
         state="disabled",
-        height=4,
+        height=MAIN_TEXT_MAX_LINES,
         width=34,
         relief="flat",
         borderwidth=0,
@@ -2863,6 +2919,9 @@ def plugin_app(parent: tk.Frame) -> tk.Frame:
     text.bind("<Double-Button-1>", _on_chat_double_click)
     text.bind("<Button-3>", _on_chat_menu)
     _attach_hover_tip(text, HOVER_TIP_TEXT)
+    # Wrapping changes with the width, so re-fit the number of shown lines
+    # whenever the box is resized.
+    text.bind("<Configure>", lambda _event: _fit_main_text_height(), add="+")
 
     _main_text = text
     _install_history_hint(text)

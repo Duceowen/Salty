@@ -366,7 +366,7 @@ def _floating_tips():
 
 
 main.event_generate("<Enter>", x=8, y=8, rootx=180, rooty=180)
-deadline = salty.time.monotonic() + 0.8
+deadline = salty.time.monotonic() + (salty.HOVER_TIP_DELAY_MS / 1000.0) + 0.6
 while salty.time.monotonic() < deadline and not _floating_tips():
     root.update()
 assert _floating_tips(), "hover tip did not open"
@@ -388,6 +388,7 @@ for i in range(40):
 main_body = main.get("1.0", "end")
 assert "hist 39" in main_body and "hist 10" in main_body
 assert "hist 09" not in main_body
+assert int(main.cget("height")) == salty.MAIN_TEXT_MAX_LINES, main.cget("height")
 pop_body = text.get("1.0", "end")
 assert "hist 00" in pop_body and "hist 39" in pop_body
 hint = salty._history_hint
@@ -415,6 +416,16 @@ root.update_idletasks()
 root.update()
 assert hint.winfo_manager() == ""
 print("main window keeps the last 30 and hints at the top OK")
+
+# An empty log must not leave the tall blank gap the fixed four-line box had.
+main.configure(state="normal")
+main.delete("1.0", "end")
+main.configure(state="disabled")
+root.update()
+salty._fit_main_text_height()
+root.update()
+assert int(main.cget("height")) == 1, main.cget("height")
+print("empty chat box shrinks to a single line OK")
 
 root.destroy()
 print("ALL RUNTIME CHECKS PASS")

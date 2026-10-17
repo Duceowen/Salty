@@ -81,8 +81,10 @@ Messages you send on any channel are attributed to **Me**, not your commander na
   stay in the chat log file and in the pop-out window. The scrollbar thumb is a
   full indicator, including when the log is sitting on the newest line. Scroll
   to the top and, when there is more history, the box says *"Click the box to
-  expand for more history."* Clicking it opens the pop-out. The widget itself is
-  a launcher rather than a button strip:
+  expand for more history."* Clicking it opens the pop-out. The box is only as
+  tall as the lines it is showing (up to four), so an almost empty log does not
+  leave a blank lower gap; it grows as messages arrive and scrolls past four.
+  The widget itself is a launcher rather than a button strip:
 
   | Action | Result |
   |--------|--------|
@@ -93,7 +95,8 @@ Messages you send on any channel are attributed to **Me**, not your commander na
   A hint reading *"Single Click to pop window out Double Click for Options."* is
   shown **inside the chat box** for the first **6 seconds**. Clicking the chat box
   before those 6 seconds are up removes the hint and opens the pop-out. The same
-  sentence is shown as a small tip while the pointer is over the chat box. The
+  sentence is shown as a small tip once the pointer has rested on the chat box for
+  a second, and the tip hides itself again after six seconds. The
   saved chat log is loaded and displayed once that hint disappears. Live messages
   that arrive during those 6 seconds are displayed straight away. The countdown
   only starts when the chat box is actually on screen, so the hint is never missed
