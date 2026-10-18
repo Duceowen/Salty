@@ -37,6 +37,9 @@ the [Modern Overlay](https://github.com/EDCD/EDMC-Plugin-Registry) plugin.
   EDMC's own logs, and the saved history is loaded back in on startup.
 - **Pause Chat** toggle (in the pop-out window) so the log stops auto-scrolling
   while you read back.
+- **Hide from mouse** (Windows): the pop-out can pass clicks through to the
+  game while your commander is on foot, with an Auto / Hidden / Shown override
+  in the right-click menu.
 - Settings persisted in EDMC's own config, a dedicated tab in EDMC's Settings dialog,
   and the themed settings window.
 
@@ -144,6 +147,12 @@ shown. Turn it off from the **Settings** window or the Salty tab in
 - **Chat logging** – append every message to `SaltyChat.log` in EDMC's logs folder
   and reload it on startup. On by default.
 - **Show incoming messages on screen** – master switch for Modern Overlay notifications.
+- **Hide the pop-out from mouse when on foot** – Windows only, off by default.
+  While on, the pop-out passes mouse clicks through to whatever is underneath
+  whenever your commander is on foot; the title bar then reads
+  **Salty (hidden from mouse)**. The right-click menu item
+  **Hide from mouse: Detect / Hidden / Off** overrides this for the session,
+  and toggling this checkbox returns control to Auto.
 - **Notify me on messages in** – per-channel notification toggles (NPC is off by default).
 - **Overlay position X / Y** – where the newest notification is drawn. These are
   coordinates on Modern Overlay's fixed **1280x960 canvas**, not screen pixels.
@@ -193,6 +202,16 @@ shown. Turn it off from the **Settings** window or the Salty tab in
   the Salty settings tab.
 
 ## Changelog
+
+### 1.2.0
+
+- **Hide the pop-out from mouse** (Windows). While active, clicks pass through
+  the pop-out window to whatever is underneath. **Hide the pop-out from mouse
+  when on foot** in Settings starts off; while it is on, the pop-out becomes
+  click-through whenever your commander is on foot. Right-click the chat and
+  pick **Hide from mouse: Detect / Hidden / Off** to override for the session,
+  and toggling the Settings checkbox returns it to Detect. While clicks pass
+  through, the title bar reads **Salty (hidden from mouse)**.
 
 ### 1.1.1
 

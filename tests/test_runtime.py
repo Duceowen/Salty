@@ -427,5 +427,108 @@ root.update()
 assert int(main.cget("height")) == 1, main.cget("height")
 print("empty chat box shrinks to a single line OK")
 
+# ---- hide from mouse (click-through) ----
+assert salty._hide_menu_label() == "Hide from mouse: Detect"
+config_mod.config.set("salty_hide_from_mouse_on_foot", True)
+salty._set_on_foot(True)
+root.update()
+assert salty._hide_active() is True
+assert salty._popout.title() == "Salty (hidden from mouse)", salty._popout.title()
+
+# journal_entry drives the on-foot state EDMC hands to plugins
+salty.journal_entry(
+    "Cmdr Example",
+    False,
+    "Sol",
+    None,
+    _entry("SendText", To="local", Message="on foot"),
+    {"OnFoot": True},
+)
+assert salty._hide_active() is True
+assert salty._popout.title() == "Salty (hidden from mouse)"
+salty.journal_entry(
+    "Cmdr Example",
+    False,
+    "Sol",
+    None,
+    _entry("SendText", To="local", Message="embarked"),
+    {},
+)
+assert salty._hide_active() is False
+assert salty._popout.title() == salty.PLUGIN_DISPLAY_NAME
+salty._set_on_foot(True)
+
+# right-click menu control cycles auto -> hidden -> shown -> auto
+salty._cycle_hide_manual()
+assert salty._hide_menu_label() == "Hide from mouse: Hidden"
+assert salty._hide_active() is True
+assert salty._popout.title() == "Salty (hidden from mouse)"
+salty._cycle_hide_manual()
+assert salty._hide_menu_label() == "Hide from mouse: Off"
+assert salty._hide_active() is False
+assert salty._popout.title() == salty.PLUGIN_DISPLAY_NAME
+salty._cycle_hide_manual()
+assert salty._hide_menu_label() == "Hide from mouse: Detect"
+assert salty._hide_active() is True
+
+# the Settings checkbox callback hands control back to Auto
+config_mod.config.set("salty_hide_from_mouse_on_foot", False)
+salty._reset_hide_to_auto()
+assert salty._hide_active() is False
+assert salty._popout.title() == salty.PLUGIN_DISPLAY_NAME
+
+if sys.platform == "win32":
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    wid = int(salty._popout.winfo_id())
+    root_h = user32.GetAncestor(wid, 2) or wid
+
+    def _st(handle):
+        return user32.GetWindowLongW(handle, -20)
+
+    def _alpha(handle):
+        from ctypes import wintypes
+
+        col = wintypes.COLORREF(0)
+        pct = wintypes.BYTE(0)
+        flags = wintypes.DWORD(0)
+        ok = user32.GetLayeredWindowAttributes(
+            handle, ctypes.byref(col), ctypes.byref(pct), ctypes.byref(flags)
+        )
+        return pct.value if ok else None
+
+    salty._ct_set(wid, True)
+    assert salty._ct_state.get(wid) is True
+    assert _st(wid) & 0x20 and _st(root_h) & 0x20, "TRANSPARENT missing"
+    assert _st(root_h) & 0x80000, "root LAYERED missing"
+    assert not (_st(wid) & 0x80000) or _alpha(wid), "child stray LAYERED"
+    salty._ct_reapply(wid)
+    assert _st(root_h) & 0x20
+    salty._ct_set(wid, False)
+    assert not (_st(wid) & 0x20) and not (_st(root_h) & 0x20), "TRANSPARENT stuck"
+    assert _st(root_h) & 0x80000, "root LAYERED lost"
+    assert not (_st(wid) & 0x80000) or _alpha(wid), "child stray LAYERED"
+    salty._ct_forget(wid)
+    assert wid not in salty._ct_state
+
+    # Tk's -alpha write can drop TRANSPARENT from the extended style
+    # (observed at alpha 1.0). _apply_popout_opacity re-asserts
+    # click-through after every opacity change, so styles must heal.
+    config_mod.config.set("salty_hide_from_mouse_on_foot", True)
+    salty._set_on_foot(True)
+    salty._ct_set(wid, True)
+    assert _st(root_h) & 0x20, "TRANSPARENT missing before clobber"
+    user32.SetWindowLongW(
+        root_h, -20, ctypes.c_long(_st(root_h) & ~0x20).value)
+    user32.SetWindowLongW(wid, -20, ctypes.c_long(_st(wid) & ~0x20).value)
+    assert not (_st(root_h) & 0x20), "clobber failed"
+    salty._apply_popout_opacity(60)
+    assert _st(root_h) & 0x20, "root TRANSPARENT not restored after opacity change"
+    assert _st(wid) & 0x20, "child TRANSPARENT not restored after opacity change"
+    assert _st(root_h) & 0x80000, "root LAYERED lost after opacity change"
+    salty._ct_forget(wid)
+print("hide from mouse auto/manual/title OK")
+
 root.destroy()
 print("ALL RUNTIME CHECKS PASS")

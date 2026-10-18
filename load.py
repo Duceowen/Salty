@@ -37,7 +37,7 @@ try:
 except Exception:  # pragma: no cover - theme is optional
     theme = None
 
-__version__ = "1.1.1"
+__version__ = "1.2.0"
 
 PLUGIN_DISPLAY_NAME = "Salty"
 PLUGIN_INTERNAL_NAME = "Salty"
@@ -227,6 +227,12 @@ _popout_toggles: tk.Frame | None = None
 _popout_chat: tk.Frame | None = None
 _settings_win: tk.Toplevel | None = None
 
+# Hide from mouse: session-only manual override (auto / hidden / shown) plus
+# the last known on-foot state. The persisted option lives in config.
+_hide_manual = "auto"
+_hide_on_foot = False
+_hide_on_foot_seeded = False
+
 _prefs_vars: dict[str, Any] = {}
 
 # Main-widget single/double click arbitration.
@@ -317,6 +323,10 @@ def _chat_logging_enabled() -> bool:
 
 def _stay_on_top_key() -> str:
     return f"{CONFIG_PREFIX}_stay_on_top"
+
+
+def _hide_on_foot_key() -> str:
+    return f"{CONFIG_PREFIX}_hide_from_mouse_on_foot"
 
 
 def _hide_boxes_key() -> str:
@@ -949,6 +959,7 @@ def _build_chat_menu() -> tk.Menu:
         font=_ui_font(1),
     )
     menu.add_command(label="Pop out window", command=_open_popout)
+    menu.add_command(label=_hide_menu_label(), command=_cycle_hide_manual)
     menu.add_command(label="Settings", command=_open_settings)
     return menu
 
@@ -1964,6 +1975,231 @@ def _toggle_stay_on_top() -> None:
     _apply_stay_on_top(_settings_win)
 
 
+# --------------------------------------------------------------------------- #
+# Hide from mouse (Windows click-through)
+# --------------------------------------------------------------------------- #
+_HIDE_MODES = ("auto", "hidden", "shown")
+_HIDE_LABELS = {"auto": "Detect", "hidden": "Hidden", "shown": "Off"}
+_CT_GWL_EXSTYLE = -20
+_CT_WS_EX_TRANSPARENT = 0x00000020
+_CT_WS_EX_LAYERED = 0x00080000
+_CT_LWA_ALPHA = 1
+_CT_GA_ROOT = 2
+# Tk winfo_id -> click-through active, remembered so <Map> can re-apply it.
+# Keyed by the Tk handle because GetAncestor can resolve differently before
+# and after the window is mapped; every write resolves the root fresh.
+_ct_state: dict[int, bool] = {}
+
+
+def _ct_root(hwnd: int) -> int:
+    import ctypes
+
+    user32 = ctypes.windll.user32
+    root = user32.GetAncestor(int(hwnd), _CT_GA_ROOT)
+    return int(root or 0)
+
+
+def _ct_write(hwnd: int, enabled: bool) -> bool:
+    """Apply click-through to the input window and its root (they can differ).
+
+    Click-through needs WS_EX_TRANSPARENT plus a valid layered setup on the
+    root: WS_EX_LAYERED with initialized attributes (alpha 255) when the
+    window is not already layered by Tk's -alpha, never a bare
+    WS_EX_LAYERED, which would render an empty white box. Tk-managed
+    layering (non-zero alpha) is left untouched so configured opacity is
+    preserved; stray un-owned layering is stripped again on disable.
+    """
+    if sys.platform != "win32" or not hwnd:
+        return False
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+    except Exception:
+        logger.exception("ctypes unavailable for click-through")
+        return False
+
+    def attrs_alpha(target: int):
+        col = wintypes.COLORREF(0)
+        pct = wintypes.BYTE(0)
+        flags = wintypes.DWORD(0)
+        try:
+            user32.GetLayeredWindowAttributes.argtypes = [
+                wintypes.HWND, ctypes.POINTER(wintypes.COLORREF),
+                ctypes.POINTER(wintypes.BYTE), ctypes.POINTER(wintypes.DWORD)]
+            user32.GetLayeredWindowAttributes.restype = wintypes.BOOL
+            ok = user32.GetLayeredWindowAttributes(
+                int(target), ctypes.byref(col), ctypes.byref(pct), ctypes.byref(flags))
+            return int(pct.value) if ok else None
+        except Exception:
+            return None
+
+    user32.SetWindowLongW.restype = ctypes.c_long
+    user32.SetLayeredWindowAttributes.argtypes = [
+        wintypes.HWND, wintypes.COLORREF, wintypes.BYTE, wintypes.DWORD]
+    user32.SetLayeredWindowAttributes.restype = wintypes.BOOL
+    try:
+        root = _ct_root(hwnd)
+    except Exception:
+        root = 0
+    targets: list[tuple[int, bool]] = [(root or int(hwnd), True)]
+    if int(hwnd) not in [t for t, _ in targets]:
+        targets.append((int(hwnd), False))
+    ok = False
+    for target, is_root in targets:
+        try:
+            style = user32.GetWindowLongW(target, _CT_GWL_EXSTYLE) & 0xFFFFFFFF
+            alpha = attrs_alpha(target)
+            if enabled:
+                style |= _CT_WS_EX_TRANSPARENT
+                if is_root:
+                    # A layered root with initialized attrs renders normally;
+                    # a bare WS_EX_LAYERED would show a white box.
+                    style |= _CT_WS_EX_LAYERED
+                elif not alpha:
+                    style &= ~_CT_WS_EX_LAYERED
+                user32.SetWindowLongW(target, _CT_GWL_EXSTYLE, style)
+                if is_root and not alpha:
+                    user32.SetLayeredWindowAttributes(
+                        target, 0, 255, _CT_LWA_ALPHA)
+            else:
+                style &= ~_CT_WS_EX_TRANSPARENT
+                if not alpha:
+                    style &= ~_CT_WS_EX_LAYERED
+                user32.SetWindowLongW(target, _CT_GWL_EXSTYLE, style)
+            ok = True
+        except Exception:
+            logger.exception(
+                "Failed to set click-through=%s for hwnd %s", enabled, target
+            )
+    return ok
+
+
+def _ct_set(hwnd: int, enabled: bool) -> bool:
+    """Enable or disable click-through for a Tk window (Windows only)."""
+    if sys.platform != "win32" or not hwnd:
+        return False
+    _ct_state[int(hwnd)] = bool(enabled)
+    ok = _ct_write(hwnd, enabled)
+    logger.info(
+        "Click-through %s for hwnd %s (root resolve %s)",
+        "enabled" if enabled else "disabled",
+        hwnd,
+        "ok" if ok else "deferred",
+    )
+    return ok
+
+
+def _ct_reapply(hwnd) -> None:
+    """Re-apply the remembered click-through state (bind to <Map>).
+
+    Windows can reset the extended style after redraws or reparents.
+    """
+    if sys.platform != "win32" or not hwnd:
+        return
+    enabled = _ct_state.get(int(hwnd))
+    if enabled is None:
+        return
+    _ct_write(hwnd, enabled)
+
+
+def _ct_forget(hwnd) -> None:
+    """Drop remembered state for a window that is being destroyed."""
+    if sys.platform != "win32" or not hwnd:
+        return
+    _ct_state.pop(int(hwnd), None)
+
+
+def _set_on_foot(value: bool) -> None:
+    """Called from journal_entry whenever EDMC's state changes."""
+    global _hide_on_foot, _hide_on_foot_seeded
+    value = bool(value)
+    _hide_on_foot_seeded = True
+    if value == _hide_on_foot:
+        return
+    _hide_on_foot = value
+    _refresh_clickthrough()
+
+
+def _current_on_foot() -> bool:
+    # Seed once from EDMC's live monitor state so the correct value is known
+    # even before the first journal line after startup.
+    global _hide_on_foot, _hide_on_foot_seeded
+    if not _hide_on_foot_seeded:
+        _hide_on_foot_seeded = True
+        try:
+            from monitor import monitor
+
+            _hide_on_foot = bool(monitor.state.get("OnFoot"))
+        except Exception:
+            pass
+    return _hide_on_foot
+
+
+def _hide_active() -> bool:
+    if _hide_manual == "hidden":
+        return True
+    if _hide_manual == "shown":
+        return False
+    if not _cfg_bool(_hide_on_foot_key(), False):
+        return False
+    return _current_on_foot()
+
+
+def _refresh_clickthrough() -> None:
+    """Apply the effective click-through state to the pop-out window."""
+    active = _hide_active()
+    if _popout is None:
+        return
+    try:
+        if not _popout.winfo_exists():
+            return
+        _ct_set(_popout.winfo_id(), active)
+        _popout.title(
+            PLUGIN_DISPLAY_NAME + (" (hidden from mouse)" if active else "")
+        )
+    except Exception:
+        logger.exception("Failed to refresh click-through state")
+
+
+def _apply_popout_opacity(val: int) -> None:
+    """Set the pop-out opacity and re-assert click-through.
+
+    Tk's -alpha write can rebuild the extended style and drop the
+    click-through bits set with SetWindowLong (observed at alpha 1.0),
+    so refresh after every opacity change.
+    """
+    try:
+        _popout.wm_attributes("-alpha", val / 100.0)
+        config.set(_popout_opacity_key(), val)
+    except Exception:
+        pass
+    _refresh_clickthrough()
+
+
+def _hide_menu_label() -> str:
+    return "Hide from mouse: %s" % _HIDE_LABELS.get(_hide_manual, "Detect")
+
+
+def _cycle_hide_manual() -> None:
+    """Right-click menu control: auto -> hidden -> shown -> auto."""
+    global _hide_manual
+    try:
+        idx = _HIDE_MODES.index(_hide_manual)
+    except ValueError:
+        idx = 0
+    _hide_manual = _HIDE_MODES[(idx + 1) % len(_HIDE_MODES)]
+    _refresh_clickthrough()
+
+
+def _reset_hide_to_auto() -> None:
+    """Settings checkbox: hand control back to the auto rule."""
+    global _hide_manual
+    _hide_manual = "auto"
+    _refresh_clickthrough()
+
+
 def _ui_font(delta: int = 0):
     """Return a default-font spec, resized by ``delta`` points."""
     try:
@@ -2506,6 +2742,40 @@ def _open_settings() -> None:
         anchor="w",
     ).pack(anchor="w", pady=(0, 8))
 
+    hide_var = tk.BooleanVar(value=_cfg_bool(_hide_on_foot_key(), False))
+
+    def _toggle_hide_on_foot() -> None:
+        try:
+            config.set(_hide_on_foot_key(), bool(hide_var.get()))
+        except Exception:
+            logger.exception("Failed to persist the hide-from-mouse setting")
+        _reset_hide_to_auto()
+
+    tk.Checkbutton(
+        body,
+        text="Hide the pop-out from mouse when on foot",
+        variable=hide_var,
+        command=_toggle_hide_on_foot,
+        background=bg,
+        foreground=fg,
+        activebackground=bg,
+        activeforeground=fg,
+        selectcolor=bg,
+        highlightthickness=0,
+        bd=0,
+        font=_ui_font(0),
+        anchor="w",
+    ).pack(anchor="w", pady=(0, 8))
+    tk.Label(
+        body,
+        text="Windows only: clicks pass through the pop-out while your commander\nis on foot. Right-click the chat and pick Hide from mouse to override.",
+        background=bg,
+        foreground=fg,
+        font=_ui_font(0),
+        justify="left",
+        anchor="w",
+    ).pack(anchor="w", pady=(0, 8))
+
     grid = tk.Frame(body, background=bg)
     grid.pack(fill="x")
 
@@ -2651,6 +2921,7 @@ def _open_popout() -> None:
                 _popout.lift()
                 _popout.focus_force()
                 _apply_stay_on_top(_popout)
+                _refresh_clickthrough()
                 return
         except Exception:
             pass
@@ -2679,6 +2950,23 @@ def _open_popout() -> None:
         _popout.wm_attributes("-alpha", _popout_opacity() / 100.0)
     except Exception:
         pass
+
+    def _popout_map(_event=None) -> None:
+        # Windows can reset the extended style after redraws, so make sure
+        # the click-through state survives every re-map.
+        if _popout is None:
+            return
+        try:
+            if _popout.winfo_exists():
+                _ct_reapply(_popout.winfo_id())
+        except Exception:
+            pass
+
+    try:
+        _popout.bind("<Map>", _popout_map, add="+")
+    except Exception:
+        pass
+    _refresh_clickthrough()
 
     # Pack the bottom controls first (from the bottom edge) so that shrinking the
     # window never clips the Clear button / Pause Chat / Stay on top controls; the
@@ -2728,12 +3016,7 @@ def _open_popout() -> None:
     opacity_slider.pack(side="right")
 
     def _on_opacity_change(*_args) -> None:
-        val = opacity_var.get()
-        try:
-            _popout.wm_attributes("-alpha", val / 100.0)
-            config.set(_popout_opacity_key(), val)
-        except Exception:
-            pass
+        _apply_popout_opacity(opacity_var.get())
 
     opacity_var.trace_add("write", _on_opacity_change)
 
@@ -2790,6 +3073,10 @@ def _open_popout() -> None:
             config.set(f"{CONFIG_PREFIX}_popout_y", _popout.winfo_y())
             config.set(f"{CONFIG_PREFIX}_popout_width", _popout.winfo_width())
             config.set(f"{CONFIG_PREFIX}_popout_height", _popout.winfo_height())
+        except Exception:
+            pass
+        try:
+            _ct_forget(_popout.winfo_id())
         except Exception:
             pass
         try:
@@ -3174,6 +3461,7 @@ def journal_entry(
     entry: dict[str, Any],
     state: dict[str, Any],
 ) -> None:
+    _set_on_foot(bool(state.get("OnFoot")))
     event = entry.get("event")
 
     if event in ("SendText", "ReceiveText"):
