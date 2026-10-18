@@ -345,12 +345,12 @@ class _Click:
     widget = main
 
 
-assert salty._dismiss_startup_hint_fn is not None
+# Startup hint was removed; verify chat click still arms the pop-out
 salty._on_chat_click(_Click())
 assert salty._hint_shown is True
 assert salty._pending_click is not None
 salty._cancel_pending_click()
-print("startup hint click dismisses and arms the pop-out OK")
+print("chat click arms the pop-out OK")
 
 
 def _floating_tips():

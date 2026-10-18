@@ -244,7 +244,7 @@ _history_pending: list[dict[str, Any]] = []
 _history_snapshot_taken = False
 _history_flushed = False
 _hint_started = False
-_hint_shown = False
+_hint_shown = True  # Set to True since we removed the startup hint
 _dismiss_startup_hint_fn = None
 
 # Overlay (Modern Overlay) state
@@ -3239,10 +3239,10 @@ def plugin_app(parent: tk.Frame) -> tk.Frame:
     except Exception:
         pass
 
-    # Explain the new click controls for a few seconds, then show the saved
-    # chat log. Live messages still arrive (and display) in the meantime.
+    # Show the saved chat log immediately. Live messages still arrive (and display) in the meantime.
     _snapshot_chat_log()
-    _show_startup_hint()
+    _flush_startup_history()
+    _fit_main_text_height()
 
     return _main_frame
 
