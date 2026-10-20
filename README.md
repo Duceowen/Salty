@@ -1,3 +1,4 @@
+<img width="1069" height="1059" alt="Screenshot 2026-10-19 220425" src="https://github.com/user-attachments/assets/6302ea76-f1d2-4bfb-89ba-3d4e42f2ac1d" />
 # Salty
 
 A port of the **Communicator** plugin from [Elite Observatory Core](https://github.com/Xjph/ObservatoryCore)
