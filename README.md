@@ -209,6 +209,15 @@ shown. Turn it off from the **Settings** window or the Salty tab in
 
 ## Changelog
 
+### 1.2.1
+
+- **Stay on top on Linux:** Salty keeps reapplying the window manager's above
+  flag while the pop-out is open. A focused fullscreen or borderless-fullscreen
+  game still uses the window manager's fullscreen layer, so it can cover the
+  pop-out. On KDE Plasma 6, add a window rule for the Salty pop-out and set
+  **Layer** to **Overlay**. On other desktops, use windowed mode or Modern
+  Overlay notifications.
+
 ### 1.2.0
 
 - **Hide the pop-out from mouse** (Windows). While active, clicks pass through
