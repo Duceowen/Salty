@@ -41,6 +41,7 @@ __version__ = "1.2.0"
 
 PLUGIN_DISPLAY_NAME = "Salty"
 PLUGIN_INTERNAL_NAME = "Salty"
+TOPMOST_REASSERT_MS = 1000
 
 # --------------------------------------------------------------------------- #
 # Logging
@@ -1942,12 +1943,64 @@ def _theme_titlebar(window: tk.Widget) -> None:
         pass
 
 
-def _set_always_on_top(window: tk.Widget, enabled: bool) -> None:
+def _set_always_on_top(window: tk.Widget, enabled: bool, lift: bool = True) -> None:
     """Pin a Salty window above other windows so the game cannot cover it."""
     try:
         window.wm_attributes("-topmost", bool(enabled))
+        if enabled and lift and window.winfo_viewable():
+            window.lift()
     except Exception:
         pass
+
+
+def _cancel_stay_on_top_job(window: tk.Widget | None) -> None:
+    if window is None:
+        return
+    job = getattr(window, "_salty_topmost_job", None)
+    if not job:
+        return
+    try:
+        window.after_cancel(job)
+    except Exception:
+        pass
+    window._salty_topmost_job = None
+
+
+def _schedule_stay_on_top(window: tk.Widget, enabled: bool) -> None:
+    """Reassert the X11 above flag while the window is visible.
+
+    Linux window managers can drop the above state when another window takes
+    focus. Reapplying it keeps Salty above normal windows; a focused fullscreen
+    window still wins because the window manager owns that layer.
+    """
+    if not enabled:
+        _cancel_stay_on_top_job(window)
+        return
+    if getattr(window, "_salty_topmost_job", None):
+        return
+    if not sys.platform.startswith("linux"):
+        return
+
+    def tick() -> None:
+        window._salty_topmost_job = None
+        try:
+            if not window.winfo_exists():
+                return
+        except Exception:
+            return
+        if not _stay_on_top_enabled():
+            _set_always_on_top(window, False)
+            return
+        _set_always_on_top(window, True, lift=False)
+        try:
+            window._salty_topmost_job = window.after(TOPMOST_REASSERT_MS, tick)
+        except Exception:
+            window._salty_topmost_job = None
+
+    try:
+        window._salty_topmost_job = window.after(TOPMOST_REASSERT_MS, tick)
+    except Exception:
+        window._salty_topmost_job = None
 
 
 def _apply_stay_on_top(window: tk.Toplevel | None) -> None:
@@ -1959,7 +2012,9 @@ def _apply_stay_on_top(window: tk.Toplevel | None) -> None:
             return
     except Exception:
         return
-    _set_always_on_top(window, _stay_on_top_enabled())
+    enabled = _stay_on_top_enabled()
+    _set_always_on_top(window, enabled)
+    _schedule_stay_on_top(window, enabled)
 
 
 def _toggle_stay_on_top() -> None:
@@ -2830,6 +2885,7 @@ def _open_settings() -> None:
 
     def _close() -> None:
         global _settings_win
+        _cancel_stay_on_top_job(dlg)
         _save_overlay_settings(overlay_var, x_var, y_var, ttl_var, size_var)
         _set_chat_logging(bool(chat_var.get()))
         try:
@@ -3067,6 +3123,7 @@ def _open_popout() -> None:
 
     def _on_close() -> None:
         global _popout, _popout_toggles, _popout_chat
+        _cancel_stay_on_top_job(_popout)
         _unregister_view(text)
         try:
             config.set(f"{CONFIG_PREFIX}_popout_x", _popout.winfo_x())
@@ -3115,6 +3172,16 @@ def _open_popout() -> None:
             pass
         _popout_geom_after_id = None
 
+    _popout.bind(
+        "<Map>",
+        lambda _event: _apply_stay_on_top(_popout),
+        add="+",
+    )
+    _popout.bind(
+        "<FocusIn>",
+        lambda _event: _apply_stay_on_top(_popout),
+        add="+",
+    )
     _popout.bind("<Configure>", _on_configure)
 
     _register_view(text)

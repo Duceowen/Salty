@@ -179,6 +179,12 @@ shown. Turn it off from the **Settings** window or the Salty tab in
 - Messages are held in memory (last 1000) and, when **Chat logging** is on (the
   default), appended to `SaltyChat.log` in EDMC's `logs` folder.
 - The plugin follows EDMC's plugin API and performs all UI work on the main thread.
+- **Stay on top on Linux:** Salty keeps reapplying the window manager's above
+  flag while the pop-out is open. A focused fullscreen or borderless-fullscreen
+  game still uses the window manager's fullscreen layer, so it can cover the
+  pop-out. On KDE Plasma 6, add a window rule for the Salty pop-out and set
+  **Layer** to **Overlay**. On other desktops, use windowed mode or Modern
+  Overlay notifications.
 
 ## Troubleshooting
 
