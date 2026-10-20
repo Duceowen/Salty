@@ -37,7 +37,7 @@ try:
 except Exception:  # pragma: no cover - theme is optional
     theme = None
 
-__version__ = "1.2.1"
+__version__ = "1.2.2"
 
 PLUGIN_DISPLAY_NAME = "Salty"
 PLUGIN_INTERNAL_NAME = "Salty"
@@ -2177,6 +2177,15 @@ def _set_on_foot(value: bool) -> None:
     _refresh_clickthrough()
 
 
+def _game_running() -> bool:
+    try:
+        from monitor import monitor
+
+        return bool(monitor.game_running())
+    except Exception:
+        return True
+
+
 def _current_on_foot() -> bool:
     # Seed once from EDMC's live monitor state so the correct value is known
     # even before the first journal line after startup.
@@ -2189,6 +2198,11 @@ def _current_on_foot() -> bool:
             _hide_on_foot = bool(monitor.state.get("OnFoot"))
         except Exception:
             pass
+    # EDMC catches up on the last journal at startup, which can leave OnFoot
+    # set from a session that has already ended. Do not hide the pop-out for
+    # Detect mode unless the game process is actually running.
+    if not _game_running():
+        return False
     return _hide_on_foot
 
 
@@ -3528,8 +3542,13 @@ def journal_entry(
     entry: dict[str, Any],
     state: dict[str, Any],
 ) -> None:
-    _set_on_foot(bool(state.get("OnFoot")))
     event = entry.get("event")
+    on_foot = bool(state.get("OnFoot"))
+    if event in ("Shutdown", "ShutDown"):
+        on_foot = False
+    elif event == "Music" and entry.get("MusicTrack") == "MainMenu":
+        on_foot = False
+    _set_on_foot(on_foot)
 
     if event in ("SendText", "ReceiveText"):
         logger.debug("journal_entry received %s: %r", event, entry.get("Message"))

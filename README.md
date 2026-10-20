@@ -209,6 +209,12 @@ shown. Turn it off from the **Settings** window or the Salty tab in
 
 ## Changelog
 
+### 1.2.2
+
+- **Hide from mouse fix:** Detect mode only hides the pop-out while Elite
+  Dangerous is running. Leaving the game on foot and reopening EDMC no longer
+  leaves the pop-out click-through; Shutdown and MainMenu clear the state.
+
 ### 1.2.1
 
 - **Stay on top on Linux:** Salty keeps reapplying the window manager's above

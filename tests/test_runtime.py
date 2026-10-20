@@ -428,6 +428,20 @@ assert int(main.cget("height")) == 1, main.cget("height")
 print("empty chat box shrinks to a single line OK")
 
 # ---- hide from mouse (click-through) ----
+class _FakeMonitor:
+    def __init__(self):
+        self.state = {"OnFoot": True}
+        self.running = True
+
+    def game_running(self):
+        return self.running
+
+
+fake_monitor = _FakeMonitor()
+monitor_mod = types.ModuleType("monitor")
+monitor_mod.monitor = fake_monitor
+sys.modules["monitor"] = monitor_mod
+
 assert salty._hide_menu_label() == "Hide from mouse: Detect"
 config_mod.config.set("salty_hide_from_mouse_on_foot", True)
 salty._set_on_foot(True)
@@ -470,6 +484,37 @@ assert salty._popout.title() == salty.PLUGIN_DISPLAY_NAME
 salty._cycle_hide_manual()
 assert salty._hide_menu_label() == "Hide from mouse: Detect"
 assert salty._hide_active() is True
+
+# EDMC can still report OnFoot from the last journal after the game exits.
+fake_monitor.running = False
+salty._refresh_clickthrough()
+assert salty._hide_active() is False
+assert salty._popout.title() == salty.PLUGIN_DISPLAY_NAME
+fake_monitor.running = True
+salty._refresh_clickthrough()
+assert salty._hide_active() is True
+assert salty._popout.title() == "Salty (hidden from mouse)"
+
+# A clean exit or return to the main menu clears the stale on-foot state.
+salty.journal_entry(
+    "Cmdr Example",
+    False,
+    "Sol",
+    None,
+    _entry("Shutdown"),
+    {"OnFoot": True},
+)
+assert salty._hide_active() is False
+salty._set_on_foot(True)
+salty.journal_entry(
+    "Cmdr Example",
+    False,
+    "Sol",
+    None,
+    _entry("Music", MusicTrack="MainMenu"),
+    {"OnFoot": True},
+)
+assert salty._hide_active() is False
 
 # the Settings checkbox callback hands control back to Auto
 config_mod.config.set("salty_hide_from_mouse_on_foot", False)
