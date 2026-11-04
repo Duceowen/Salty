@@ -9,6 +9,14 @@ the EDMC main window (with an optional larger pop-out window), lets you filter
 by channel, and can raise on-screen notifications for incoming messages through
 the [Modern Overlay](https://github.com/EDCD/EDMC-Plugin-Registry) plugin.
 
+## Download
+
+**[Download Salty 1.2.2](https://github.com/Duceowen/Salty/releases/download/v1.2.2/Salty-1.2.2.zip)** (zip) - [all releases](https://github.com/Duceowen/Salty/releases)
+
+1. Download the zip and unzip it
+2. Copy the `salty` folder into your EDMC `plugins` directory (see [Install](#install) for paths)
+3. Restart EDMC
+
 ## Features
 
 - **Chat log** of all sent and received messages with optional timestamp and
@@ -210,6 +218,9 @@ shown. Turn it off from the **Settings** window or the Salty tab in
 
 ## Changelog
 
+<details>
+<summary><b>Changelog</b> (click to expand)</summary>
+
 ### 1.2.2
 
 - **Hide from mouse fix:** Detect mode only hides the pop-out while Elite
@@ -286,6 +297,8 @@ shown. Turn it off from the **Settings** window or the Salty tab in
 
 - First release. Chat log, channel filters, pop-out window, stay-on-top,
   on-screen notifications, and chat logging.
+
+</details>
 
 ## Development
 
