@@ -37,7 +37,7 @@ try:
 except Exception:  # pragma: no cover - theme is optional
     theme = None
 
-__version__ = "1.2.2"
+__version__ = "1.2.3"
 
 PLUGIN_DISPLAY_NAME = "Salty"
 PLUGIN_INTERNAL_NAME = "Salty"
@@ -227,6 +227,20 @@ _popout: tk.Toplevel | None = None
 _popout_toggles: tk.Frame | None = None
 _popout_chat: tk.Frame | None = None
 _settings_win: tk.Toplevel | None = None
+
+# Shutdown. EDMC calls plugin_stop() from its own close handler, which only
+# runs when the *root* window receives WM_DELETE_WINDOW. Extra Toplevels are
+# separate Win32 top-level windows; while one of them is the foreground
+# window, a graceful close (CloseMainWindow / taskkill without /F) never
+# reaches that root, and Windows logoff sends WM_ENDSESSION which Tk does
+# not turn into a quit. _shutting_down makes the teardown idempotent.
+_shutting_down = False
+_host_close_sent = False
+_tracked_toplevels: list[tk.Toplevel] = []
+_modal_closers: list[Any] = []
+_after_handles: list[tuple[tk.Misc, str]] = []
+_session_wndproc = None
+_session_old_procs: dict[int, int] = {}
 
 # Hide from mouse: session-only manual override (auto / hidden / shown) plus
 # the last known on-foot state. The persisted option lives in config.
@@ -662,7 +676,7 @@ def _set_chat_logging(enabled: bool) -> None:
         config.set(_chat_logging_key(), bool(enabled))
     except Exception:
         logger.exception("Failed to persist the chat logging setting")
-    if enabled:
+    if enabled and not _shutting_down:
         _snapshot_chat_log()
         if _hint_shown:
             _flush_startup_history()
@@ -689,6 +703,270 @@ def _dialog_master(preferred: tk.Misc | None = None) -> tk.Misc | None:
         except Exception:
             continue
     return getattr(tk, "_default_root", None)
+
+
+def _host_root() -> tk.Misc | None:
+    """EDMC's Tk root, the window whose close handler actually exits the app."""
+    root = _dialog_master(None)
+    try:
+        if root is not None and root.winfo_exists():
+            return root
+    except Exception:
+        return None
+    return None
+
+
+def _window_alive(window: tk.Misc | None) -> bool:
+    if window is None:
+        return False
+    try:
+        return bool(window.winfo_exists())
+    except Exception:
+        return False
+
+
+def _after(widget: tk.Misc | None, delay_ms: int, callback) -> str | None:
+    """Schedule ``callback`` and remember it so shutdown can cancel it."""
+    if _shutting_down or widget is None:
+        return None
+
+    holder: dict[str, Any] = {}
+
+    def _run() -> None:
+        handle = holder.get("id")
+        if handle is not None:
+            _after_handles[:] = [
+                item for item in _after_handles if item[1] != handle
+            ]
+        if _shutting_down:
+            return
+        callback()
+
+    try:
+        handle = widget.after(delay_ms, _run)
+    except Exception:
+        return None
+    holder["id"] = handle
+    _after_handles.append((widget, handle))
+    return handle
+
+
+def _cancel_afters() -> None:
+    pending = list(_after_handles)
+    _after_handles.clear()
+    for widget, handle in pending:
+        try:
+            widget.after_cancel(handle)
+        except Exception:
+            pass
+
+
+def _adopt_toplevel(window: tk.Toplevel) -> None:
+    """Keep a Salty window from becoming the process main window.
+
+    An unowned top-level window is what ``CloseMainWindow`` and a
+    session-end script treat as EDMC. Owning every Salty window to the
+    EDMC root leaves that root as the window a graceful close is sent to,
+    while the title-bar X on the pop-out still only closes the pop-out.
+    The window stays out of the taskbar's "main window" slot and is not
+    given the keyboard focus.
+    """
+    if window not in _tracked_toplevels:
+        _tracked_toplevels.append(window)
+    root = _host_root()
+    if root is not None:
+        try:
+            window.transient(root)
+        except Exception:
+            pass
+    try:
+        window.bind("<Map>", lambda _event, win=window: _install_session_hook(win), add="+")
+    except Exception:
+        pass
+    _install_session_hook(window)
+
+
+def _forget_toplevel(window: tk.Misc | None) -> None:
+    if window is None:
+        return
+    _tracked_toplevels[:] = [
+        item for item in _tracked_toplevels if item is not window
+    ]
+
+
+def _release_grabs() -> None:
+    root = _host_root()
+    if root is None:
+        return
+    try:
+        current = root.grab_current()
+    except Exception:
+        current = None
+    if current is None:
+        return
+    try:
+        current.grab_release()
+    except Exception:
+        pass
+
+
+def _close_tracked_toplevels() -> None:
+    """Destroy every Salty Toplevel, saving geometry and settings first."""
+    # Copy: closers remove themselves from the lists as they run.
+    for closer in list(_modal_closers):
+        try:
+            closer()
+        except Exception:
+            logger.exception("Failed to dismiss a Salty dialog during shutdown")
+    _dismiss_hover_tips()
+
+    settings = _settings_win
+    closer = getattr(settings, "_salty_close", None) if settings is not None else None
+    if closer is not None and _window_alive(settings):
+        try:
+            closer()
+        except Exception:
+            logger.exception("Failed to close the Salty settings window")
+
+    popout = _popout
+    closer = getattr(popout, "_salty_close", None) if popout is not None else None
+    if closer is not None and _window_alive(popout):
+        try:
+            closer()
+        except Exception:
+            logger.exception("Failed to close the Salty pop-out window")
+
+    for window in list(_tracked_toplevels):
+        _forget_toplevel(window)
+        if not _window_alive(window):
+            continue
+        try:
+            window.destroy()
+        except Exception:
+            pass
+
+
+def _request_host_close() -> None:
+    """Ask EDMC's existing close handler to run, once.
+
+    That handler is ``AppWindow.onexit``. It saves EDMC's own config and
+    then calls ``plugin_stop``. Invoking it on Windows session end is what
+    makes logoff, restart and shutdown exit cleanly instead of Tk leaving
+    the process up until Windows kills it.
+    """
+    global _host_close_sent
+    if _host_close_sent or _shutting_down:
+        return
+    _host_close_sent = True
+    root = _host_root()
+
+    def _fire() -> None:
+        if _shutting_down:
+            return
+        cmd = ""
+        try:
+            if root is not None and root.winfo_exists():
+                cmd = str(root.tk.call("wm", "protocol", root._w, "WM_DELETE_WINDOW") or "")
+        except Exception:
+            cmd = ""
+        if cmd:
+            try:
+                root.tk.call(cmd)
+                return
+            except Exception:
+                logger.exception("EDMC close handler failed during session end")
+        plugin_stop()
+
+    try:
+        if root is not None and root.winfo_exists():
+            root.after(0, _fire)
+            return
+    except Exception:
+        pass
+    _fire()
+
+
+def _on_windows_session(ending: bool) -> None:
+    """WM_ENDSESSION. ``ending`` is false when the user cancels shutdown."""
+    if not ending:
+        logger.info("Windows session end cancelled; Salty staying open")
+        return
+    if _shutting_down or _host_close_sent:
+        return
+    logger.info("Windows session ending; asking EDMC to close")
+    _request_host_close()
+
+
+def _install_session_hook(window: tk.Misc | None = None) -> None:
+    """Subclass a top-level HWND so logoff and shutdown reach Salty.
+
+    Tk turns WM_QUERYENDSESSION into WM_SAVE_YOURSELF and then does nothing
+    with WM_ENDSESSION, so a Windows restart never calls EDMC's close
+    handler. The hook answers the query immediately (a slow answer is the
+    "this app is preventing shutdown" dialog) and, once the session is
+    actually ending, asks EDMC to close on the next Tk turn.
+    """
+    global _session_wndproc
+    if sys.platform != "win32":
+        return
+    target = window if window is not None else _host_root()
+    if target is None:
+        return
+    try:
+        hwnd = int(target.winfo_id())
+    except Exception:
+        return
+    try:
+        hwnd = _ct_root(hwnd) or hwnd
+    except Exception:
+        pass
+    if not hwnd or hwnd in _session_old_procs:
+        return
+    try:
+        import ctypes
+        from ctypes import wintypes
+
+        user32 = ctypes.windll.user32
+        wndproc_type = ctypes.WINFUNCTYPE(
+            ctypes.c_ssize_t, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
+        )
+        if _session_wndproc is None:
+            def _proc(handle, msg, wparam, lparam):
+                # WM_QUERYENDSESSION must return TRUE quickly. The user can
+                # still cancel, so the actual close waits for WM_ENDSESSION.
+                if msg == 0x0011:
+                    return 1
+                if msg == 0x0016 and int(wparam):
+                    try:
+                        host = _host_root()
+                        if host is not None:
+                            # Tk's own window proc drains the Tcl queue before
+                            # it returns, so this runs EDMC's close on this turn.
+                            host.after(0, lambda: _on_windows_session(True))
+                        else:
+                            _on_windows_session(True)
+                    except Exception:
+                        _on_windows_session(True)
+                previous = _session_old_procs.get(int(handle))
+                if previous:
+                    return user32.CallWindowProcW(previous, handle, msg, wparam, lparam)
+                return 0
+
+            _session_wndproc = wndproc_type(_proc)
+            user32.CallWindowProcW.restype = ctypes.c_ssize_t
+            user32.CallWindowProcW.argtypes = [
+                ctypes.c_void_p, wintypes.HWND, wintypes.UINT, wintypes.WPARAM, wintypes.LPARAM
+            ]
+        set_long = getattr(user32, "SetWindowLongPtrW", None)
+        if set_long is None:
+            set_long = user32.SetWindowLongW
+        set_long.restype = ctypes.c_void_p
+        set_long.argtypes = [wintypes.HWND, ctypes.c_int, ctypes.c_void_p]
+        previous = set_long(hwnd, -4, ctypes.cast(_session_wndproc, ctypes.c_void_p))
+        if previous:
+            _session_old_procs[int(hwnd)] = int(previous)
+    except Exception:
+        logger.exception("Could not install the Windows session-end hook")
 
 
 # --------------------------------------------------------------------------- #
@@ -720,6 +998,8 @@ def _show_startup_hint() -> None:
         _dismiss_startup_hint_fn = None
         _hint_shown = True
         _startup_hint_up = False
+        if _shutting_down:
+            return
         logger.debug("Salty startup hint dismissed; loading the saved chat log")
         _flush_startup_history()
         _fit_main_text_height()
@@ -787,9 +1067,9 @@ def _show_startup_hint() -> None:
                 return
             if box.winfo_ismapped():
                 logger.debug("Salty startup hint shown inside the chat box")
-                state["timer"] = box.after(STARTUP_HINT_MS, _dismiss)
+                state["timer"] = _after(box, STARTUP_HINT_MS, _dismiss)
                 return
-            state["poll"] = box.after(200, _arm)
+            state["poll"] = _after(box, 200, _arm)
         except Exception:
             pass
 
@@ -817,6 +1097,8 @@ def _cancel_pending_click() -> None:
 def _open_popout_deferred() -> None:
     global _pending_click
     _pending_click = None
+    if _shutting_down:
+        return
     _open_popout()
 
 
@@ -835,7 +1117,7 @@ def _on_chat_click(event: tk.Event) -> str:
     # it is clicked, and a timer parked on that label would be cancelled with it.
     host = _main_text if _main_text is not None else event.widget
     try:
-        _pending_click = host.after(CLICK_ACTION_DELAY_MS, _open_popout_deferred)
+        _pending_click = _after(host, CLICK_ACTION_DELAY_MS, _open_popout_deferred)
     except Exception:
         _open_popout()
     _dismiss_startup_hint()
@@ -888,6 +1170,7 @@ def _attach_hover_tip(widget: tk.Widget, text: str) -> None:
         win = state.get("win")
         state["win"] = None
         if win is not None:
+            _forget_toplevel(win)
             try:
                 win.destroy()
             except Exception:
@@ -907,6 +1190,7 @@ def _attach_hover_tip(widget: tk.Widget, text: str) -> None:
         except Exception:
             return
         state["win"] = win
+        _adopt_toplevel(win)
         try:
             win.wm_overrideredirect(True)
             win.wm_attributes("-topmost", True)
@@ -930,14 +1214,14 @@ def _attach_hover_tip(widget: tk.Widget, text: str) -> None:
         except Exception:
             pass
         try:
-            state["linger"] = widget.after(HOVER_TIP_LINGER_MS, _hide)
+            state["linger"] = _after(widget, HOVER_TIP_LINGER_MS, _hide)
         except Exception:
             pass
 
     def _show(event: tk.Event) -> None:
         _hide()
         try:
-            state["after"] = widget.after(HOVER_TIP_DELAY_MS, lambda: _reveal(event))
+            state["after"] = _after(widget, HOVER_TIP_DELAY_MS, lambda: _reveal(event))
         except Exception:
             _reveal(event)
 
@@ -1509,7 +1793,14 @@ def _update_history_hint(first: float | None = None) -> None:
 
 
 def _themed_confirm(parent: tk.Misc, message: str) -> bool:
-    """Show a modal Yes/No dialog styled with EDMC's active theme colours."""
+    """Show a Yes/No dialog styled with EDMC's active theme colours.
+
+    The dialog does not grab the application. A grab would disable EDMC's
+    main window, and Tk then drops the WM_CLOSE that a session-end script
+    posts to that window until the dialog is dismissed by hand.
+    """
+    if _shutting_down:
+        return False
     try:
         dlg = tk.Toplevel(_dialog_master(parent))
     except Exception:
@@ -1538,6 +1829,11 @@ def _themed_confirm(parent: tk.Misc, message: str) -> bool:
     def _choose(value: bool) -> None:
         result["value"] = value
         try:
+            _modal_closers.remove(_choose_false)
+        except ValueError:
+            pass
+        _forget_toplevel(dlg)
+        try:
             dlg.grab_release()
         except Exception:
             pass
@@ -1545,6 +1841,12 @@ def _themed_confirm(parent: tk.Misc, message: str) -> bool:
             dlg.destroy()
         except Exception:
             pass
+
+    def _choose_false() -> None:
+        _choose(False)
+
+    _modal_closers.append(_choose_false)
+    _adopt_toplevel(dlg)
 
     btns = tk.Frame(dlg, background=bg)
     btns.pack(fill="x", padx=12, pady=(0, 12))
@@ -1584,16 +1886,10 @@ def _themed_confirm(parent: tk.Misc, message: str) -> bool:
     except Exception:
         pass
 
-    try:
-        dlg.transient(parent.winfo_toplevel() if parent is not None else None)
-    except Exception:
-        pass
-
     _theme_titlebar(dlg)
 
     try:
-        dlg.grab_set()
-        dlg.focus_force()
+        dlg.focus_set()
         dlg.wait_window()
     except Exception:
         pass
@@ -1983,6 +2279,8 @@ def _schedule_stay_on_top(window: tk.Widget, enabled: bool) -> None:
 
     def tick() -> None:
         window._salty_topmost_job = None
+        if _shutting_down:
+            return
         try:
             if not window.winfo_exists():
                 return
@@ -1993,12 +2291,12 @@ def _schedule_stay_on_top(window: tk.Widget, enabled: bool) -> None:
             return
         _set_always_on_top(window, True, lift=False)
         try:
-            window._salty_topmost_job = window.after(TOPMOST_REASSERT_MS, tick)
+            window._salty_topmost_job = _after(window, TOPMOST_REASSERT_MS, tick)
         except Exception:
             window._salty_topmost_job = None
 
     try:
-        window._salty_topmost_job = window.after(TOPMOST_REASSERT_MS, tick)
+        window._salty_topmost_job = _after(window, TOPMOST_REASSERT_MS, tick)
     except Exception:
         window._salty_topmost_job = None
 
@@ -2054,6 +2352,28 @@ def _ct_root(hwnd: int) -> int:
     return int(root or 0)
 
 
+def _host_hwnd() -> int:
+    """Top-level HWND of EDMC's root. Click-through must never restyle it."""
+    root = _host_root()
+    if root is None:
+        return 0
+    try:
+        hwnd = int(root.winfo_id())
+    except Exception:
+        return 0
+    if sys.platform != "win32" or not hwnd:
+        return hwnd
+    try:
+        return _ct_root(hwnd) or hwnd
+    except Exception:
+        return hwnd
+
+
+def _ct_target_allowed(hwnd: int) -> bool:
+    host = _host_hwnd()
+    return not host or int(hwnd) != int(host)
+
+
 def _ct_write(hwnd: int, enabled: bool) -> bool:
     """Apply click-through to the input window and its root (they can differ).
 
@@ -2103,6 +2423,11 @@ def _ct_write(hwnd: int, enabled: bool) -> bool:
         targets.append((int(hwnd), False))
     ok = False
     for target, is_root in targets:
+        if not _ct_target_allowed(target):
+            logger.warning(
+                "Refusing to change click-through on EDMC's own window (%s)", target
+            )
+            continue
         try:
             style = user32.GetWindowLongW(target, _CT_GWL_EXSTYLE) & 0xFFFFFFFF
             alpha = attrs_alpha(target)
@@ -2366,10 +2691,15 @@ def _style_chat_texts() -> None:
     """
     Apply the active EDMC theme to our whole widget tree.
 
+    Skipped during shutdown so a late ``after`` callback cannot touch a
+    window EDMC is destroying and raise a dialog that keeps the process up.
+
     EDMC's ``theme.update()`` skips widgets it considers explicitly styled
     (notably ``tk.Text``) and never themes classic scrollbars, so we recolour
     everything ourselves from the live theme colours.
     """
+    if _shutting_down:
+        return
     bg, fg = _theme_colors()
 
     if _main_frame is not None:
@@ -2610,7 +2940,6 @@ def _open_settings() -> None:
             if _settings_win.winfo_exists():
                 _settings_win.deiconify()
                 _settings_win.lift()
-                _settings_win.focus_force()
                 _apply_stay_on_top(_settings_win)
                 return
         except Exception:
@@ -2635,6 +2964,7 @@ def _open_settings() -> None:
         return
 
     _settings_win = dlg
+    _adopt_toplevel(dlg)
     # Build the window hidden and only show it once it has been sized and
     # positioned, so it never flashes open at the OS default location first.
     try:
@@ -2900,6 +3230,10 @@ def _open_settings() -> None:
     def _close() -> None:
         global _settings_win
         _cancel_stay_on_top_job(dlg)
+        _forget_toplevel(dlg)
+        # Persist whatever the window is showing. Shutdown uses this same
+        # path so an open settings window cannot drop unsaved choices, and
+        # it never rewrites the chat log.
         _save_overlay_settings(overlay_var, x_var, y_var, ttl_var, size_var)
         _set_chat_logging(bool(chat_var.get()))
         try:
@@ -2907,6 +3241,8 @@ def _open_settings() -> None:
         except Exception:
             pass
         _settings_win = None
+
+    dlg._salty_close = _close  # type: ignore[attr-defined]
 
     tk.Button(
         btns,
@@ -2950,13 +3286,8 @@ def _open_settings() -> None:
 
     try:
         dlg.bind("<Map>", _retheme, add="+")
-        dlg.after_idle(_retheme)
-        dlg.after(300, _retheme)
-    except Exception:
-        pass
-
-    try:
-        dlg.transient(parent.winfo_toplevel())
+        _after(dlg, 0, _retheme)
+        _after(dlg, 300, _retheme)
     except Exception:
         pass
 
@@ -2975,7 +3306,6 @@ def _open_settings() -> None:
     try:
         dlg.deiconify()
         dlg.lift()
-        dlg.focus_force()
     except Exception:
         pass
 
@@ -2989,7 +3319,6 @@ def _open_popout() -> None:
             if _popout.winfo_exists():
                 _popout.deiconify()
                 _popout.lift()
-                _popout.focus_force()
                 _apply_stay_on_top(_popout)
                 _refresh_clickthrough()
                 return
@@ -3006,6 +3335,8 @@ def _open_popout() -> None:
         logger.exception("Could not create Salty pop-out window")
         _popout = None
         return
+
+    _adopt_toplevel(_popout)
 
     popout_x = _cfg_int(f"{CONFIG_PREFIX}_popout_x", DEFAULT_POPOUT_X)
     popout_y = _cfg_int(f"{CONFIG_PREFIX}_popout_y", DEFAULT_POPOUT_Y)
@@ -3137,28 +3468,37 @@ def _open_popout() -> None:
 
     def _on_close() -> None:
         global _popout, _popout_toggles, _popout_chat
-        _cancel_stay_on_top_job(_popout)
+        window = _popout
+        _cancel_stay_on_top_job(window)
         _unregister_view(text)
+        _forget_toplevel(window)
+        # Remember where the user left the window. This only writes the four
+        # geometry keys; the chat log is not opened.
         try:
-            config.set(f"{CONFIG_PREFIX}_popout_x", _popout.winfo_x())
-            config.set(f"{CONFIG_PREFIX}_popout_y", _popout.winfo_y())
-            config.set(f"{CONFIG_PREFIX}_popout_width", _popout.winfo_width())
-            config.set(f"{CONFIG_PREFIX}_popout_height", _popout.winfo_height())
+            if window is not None and window.winfo_exists():
+                config.set(f"{CONFIG_PREFIX}_popout_x", window.winfo_x())
+                config.set(f"{CONFIG_PREFIX}_popout_y", window.winfo_y())
+                config.set(f"{CONFIG_PREFIX}_popout_width", window.winfo_width())
+                config.set(f"{CONFIG_PREFIX}_popout_height", window.winfo_height())
         except Exception:
             pass
         try:
-            _ct_forget(_popout.winfo_id())
+            if window is not None:
+                _ct_forget(window.winfo_id())
         except Exception:
             pass
         try:
-            _popout.destroy()
+            if window is not None:
+                window.destroy()
         except Exception:
             pass
         _popout = None
         _popout_toggles = None
         _popout_chat = None
-        _set_popout_active(False)
+        if not _shutting_down:
+            _set_popout_active(False)
 
+    _popout._salty_close = _on_close  # type: ignore[attr-defined]
     _popout.protocol("WM_DELETE_WINDOW", _on_close)
 
     _popout_geom_after_id = None
@@ -3168,8 +3508,11 @@ def _open_popout() -> None:
             if _popout is None or not _popout.winfo_exists():
                 return
             if _popout_geom_after_id is not None:
-                _popout.after_cancel(_popout_geom_after_id)
-            _popout_geom_after_id = _popout.after(300, _save_popout_geometry)
+                try:
+                    _popout.after_cancel(_popout_geom_after_id)
+                except Exception:
+                    pass
+            _popout_geom_after_id = _after(_popout, 300, _save_popout_geometry)
         except Exception:
             pass
 
@@ -3221,13 +3564,13 @@ def _open_popout() -> None:
             pass
 
     try:
-        _popout.after_idle(_style_chat_texts)
-        _popout.after(300, _style_chat_texts)
-        _popout.after(150, _restyle_opacity)
-        _popout.after(500, _restyle_opacity)
-        _popout.after(150, lambda: _theme_titlebar(_popout))
-        _popout.after_idle(lambda: _apply_stay_on_top(_popout))
-        _popout.after(150, lambda: _apply_stay_on_top(_popout))
+        _after(_popout, 0, _style_chat_texts)
+        _after(_popout, 300, _style_chat_texts)
+        _after(_popout, 150, _restyle_opacity)
+        _after(_popout, 500, _restyle_opacity)
+        _after(_popout, 150, lambda: _theme_titlebar(_popout))
+        _after(_popout, 0, lambda: _apply_stay_on_top(_popout))
+        _after(_popout, 150, lambda: _apply_stay_on_top(_popout))
     except Exception:
         pass
 
@@ -3305,7 +3648,7 @@ def plugin_app(parent: tk.Frame) -> tk.Frame:
     # reset our scrollbar/text colours, so re-apply ours shortly afterwards.
     def _on_map(_event=None):
         try:
-            _main_frame.after(50, _style_chat_texts)
+            _after(_main_frame, 50, _style_chat_texts)
         except Exception:
             pass
 
@@ -3315,8 +3658,9 @@ def plugin_app(parent: tk.Frame) -> tk.Frame:
         pass
 
     try:
-        _main_frame.after_idle(_style_chat_texts)
-        _main_frame.after(600, _style_chat_texts)
+        _after(_main_frame, 0, _style_chat_texts)
+        _after(_main_frame, 600, _style_chat_texts)
+        _install_session_hook()
     except Exception:
         pass
 
@@ -3531,6 +3875,29 @@ def plugin_start3(plugin_dir: str) -> str:
 
 
 def plugin_stop() -> None:
+    """Drop every Salty window and timer so EDMC's mainloop can exit.
+
+    Called by EDMC while it is already closing, and safe to call twice.
+    Geometry and the settings shown in an open settings window are written
+    first. The chat log is left untouched: nothing here truncates, rewrites
+    or deletes ``SaltyChat.log``.
+    """
+    global _shutting_down
+    if _shutting_down:
+        return
+    _shutting_down = True
+    logger.info("%s stopping", PLUGIN_DISPLAY_NAME)
+    try:
+        _release_grabs()
+        _cancel_pending_click()
+        _cancel_afters()
+        try:
+            _dismiss_startup_hint()
+        except Exception:
+            pass
+        _close_tracked_toplevels()
+    except Exception:
+        logger.exception("Salty shutdown failed")
     logger.info("%s stopped", PLUGIN_DISPLAY_NAME)
 
 
