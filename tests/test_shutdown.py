@@ -110,9 +110,7 @@ assert salty._window_alive(salty._settings_win)
 assert str(salty._popout.wm_transient()) == str(root)
 assert str(salty._settings_win.wm_transient()) == str(root)
 assert root.grab_current() is None
-focused = root.focus_get()
-if focused is not None:
-    assert focused.winfo_toplevel() is root
+assert root.focus_get() is focus
 assert "focus_force" not in (REPO_ROOT / "load.py").read_text(encoding="utf-8")
 assert "grab_set" not in (REPO_ROOT / "load.py").read_text(encoding="utf-8")
 assert salty._ct_target_allowed(salty._host_hwnd()) is False

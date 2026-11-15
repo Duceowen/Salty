@@ -725,6 +725,63 @@ def _window_alive(window: tk.Misc | None) -> bool:
         return False
 
 
+def _focused_widget() -> tk.Misc | None:
+    root = _host_root()
+    if root is None:
+        return None
+    try:
+        return root.focus_get()
+    except Exception:
+        return None
+
+
+def _is_salty_window(widget: tk.Misc | None) -> bool:
+    if not _window_alive(widget):
+        return False
+    try:
+        top = widget.winfo_toplevel()
+    except Exception:
+        return False
+    return top in _tracked_toplevels or top is _popout or top is _settings_win
+
+
+def _restore_focus(previous: tk.Misc | None, owner: tk.Misc | None = None) -> None:
+    """Give keyboard focus back after ``owner`` was shown.
+
+    Mapping a Toplevel takes focus on some Tk builds. The pop-out and the
+    settings window should come forward without becoming the focused window.
+    Focus that already sits on some other window, including a confirmation
+    dialog, is left alone.
+    """
+    if _shutting_down:
+        return
+    current = _focused_widget()
+    if owner is not None and _window_alive(current):
+        try:
+            if current.winfo_toplevel() is not owner:
+                return
+        except Exception:
+            return
+    target = previous if _window_alive(previous) and not _is_salty_window(previous) else None
+    if target is None:
+        target = _host_root()
+    if not _window_alive(target):
+        return
+    try:
+        target.focus_set()
+    except Exception:
+        pass
+
+
+def _present(window: tk.Toplevel, previous: tk.Misc | None) -> None:
+    try:
+        window.deiconify()
+        window.lift()
+    except Exception:
+        pass
+    _restore_focus(previous, window)
+
+
 def _after(widget: tk.Misc | None, delay_ms: int, callback) -> str | None:
     """Schedule ``callback`` and remember it so shutdown can cancel it."""
     if _shutting_down or widget is None:
@@ -2241,10 +2298,12 @@ def _theme_titlebar(window: tk.Widget) -> None:
 
 def _set_always_on_top(window: tk.Widget, enabled: bool, lift: bool = True) -> None:
     """Pin a Salty window above other windows so the game cannot cover it."""
+    previous = _focused_widget()
     try:
         window.wm_attributes("-topmost", bool(enabled))
         if enabled and lift and window.winfo_viewable():
             window.lift()
+            _restore_focus(previous, window)
     except Exception:
         pass
 
@@ -2938,14 +2997,15 @@ def _open_settings() -> None:
     if _settings_win is not None:
         try:
             if _settings_win.winfo_exists():
-                _settings_win.deiconify()
-                _settings_win.lift()
+                previous = _focused_widget()
+                _present(_settings_win, previous)
                 _apply_stay_on_top(_settings_win)
                 return
         except Exception:
             pass
         _settings_win = None
 
+    previous_focus = _focused_widget()
     parent = None
     for candidate in (_popout, _main_frame):
         try:
@@ -3281,6 +3341,7 @@ def _open_settings() -> None:
                 _paint_swatch(channel, button)
             _theme_titlebar(dlg)
             _apply_stay_on_top(dlg)
+            _restore_focus(previous_focus, dlg)
         except Exception:
             pass
 
@@ -3303,22 +3364,19 @@ def _open_settings() -> None:
     except Exception:
         pass
 
-    try:
-        dlg.deiconify()
-        dlg.lift()
-    except Exception:
-        pass
+    _present(dlg, previous_focus)
+    _after(dlg, 0, lambda: _restore_focus(previous_focus, dlg))
 
 
 def _open_popout() -> None:
     global _popout, _popout_toggles, _popout_chat
 
     _dismiss_hover_tips()
+    previous_focus = _focused_widget()
     if _popout is not None:
         try:
             if _popout.winfo_exists():
-                _popout.deiconify()
-                _popout.lift()
+                _present(_popout, previous_focus)
                 _apply_stay_on_top(_popout)
                 _refresh_clickthrough()
                 return
@@ -3571,8 +3629,10 @@ def _open_popout() -> None:
         _after(_popout, 150, lambda: _theme_titlebar(_popout))
         _after(_popout, 0, lambda: _apply_stay_on_top(_popout))
         _after(_popout, 150, lambda: _apply_stay_on_top(_popout))
+        _after(_popout, 0, lambda: _restore_focus(previous_focus, _popout))
     except Exception:
         pass
+    _restore_focus(previous_focus, _popout)
 
 
 def plugin_app(parent: tk.Frame) -> tk.Frame:
