@@ -221,6 +221,22 @@ shown. Turn it off from the **Settings** window or the Salty tab in
 <details>
 <summary><b>Changelog</b> (click to expand)</summary>
 
+### 1.2.3
+
+- **EDMC closes with the pop-out open.** Salty's pop-out, settings and
+  confirmation windows are owned by EDMC's main window, so a graceful close
+  (the window X, an external WM_CLOSE, or `taskkill` without `/F`) reaches
+  EDMC. Closing one of those windows from its own title bar closes only that
+  window.
+- **Windows logoff, restart and shutdown.** Salty answers the session-end
+  messages and asks EDMC to run its normal close, so the process exits with
+  the session while a Salty window is open.
+- **Nothing is grabbed or left modal.** Confirmation dialogs no longer grab
+  the application, and no Salty window forces the keyboard focus. On the way
+  out, Salty cancels its timers and destroys every window it opened.
+  `SaltyChat.log` and the saved settings are left as they were; an open
+  settings window still saves the choices it is showing.
+
 ### 1.2.2
 
 - **Hide from mouse fix:** Detect mode only hides the pop-out while Elite

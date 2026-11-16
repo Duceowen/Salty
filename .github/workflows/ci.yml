@@ -65,4 +65,6 @@ jobs:
           sudo apt-get install -y -qq python3-tk xvfb
 
       - name: Run headless runtime test
-        run: xvfb-run -a /usr/bin/python3 tests/test_runtime.py
+        run: |
+          xvfb-run -a /usr/bin/python3 tests/test_runtime.py
+          xvfb-run -a /usr/bin/python3 tests/test_shutdown.py
