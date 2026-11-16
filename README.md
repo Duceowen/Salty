@@ -221,6 +221,16 @@ shown. Turn it off from the **Settings** window or the Salty tab in
 <details>
 <summary><b>Changelog</b> (click to expand)</summary>
 
+### 1.2.4
+
+- **Chat logging off the UI thread.** New lines for `SaltyChat.log` are
+  queued and appended by a background writer, so a busy channel no longer
+  opens the file on EDMC's window thread for every message. The log format
+  is unchanged.
+- **Nothing is lost on the way out.** EDMC's plugin stop and Python's exit
+  both flush the queue, and Clear Chat flushes it before deleting the file so
+  queued lines cannot bring the file back.
+
 ### 1.2.3
 
 - **EDMC closes with the pop-out open.** Salty's pop-out, settings and

@@ -16,11 +16,14 @@ https://github.com/Xjph/ObservatoryCore), MIT licensed.
 
 from __future__ import annotations
 
+import atexit
 import logging
 import os
+import queue
 import subprocess
 import sys
 import textwrap
+import threading
 import time
 import tkinter as tk
 from datetime import datetime, timezone
@@ -37,7 +40,7 @@ try:
 except Exception:  # pragma: no cover - theme is optional
     theme = None
 
-__version__ = "1.2.3"
+__version__ = "1.2.4"
 
 PLUGIN_DISPLAY_NAME = "Salty"
 PLUGIN_INTERNAL_NAME = "Salty"
@@ -574,9 +577,50 @@ def _sanitise_field(value: Any) -> str:
     return str(value).replace("\t", " ").replace("\r", " ").replace("\n", " ")
 
 
+_chat_queue: Any = None
+_chat_writer: threading.Thread | None = None
+
+
+def _chat_writer_loop(q: Any) -> None:
+    """Append queued chat lines on a daemon thread, batching bursts into one open."""
+    while True:
+        lines: list[str] = []
+        stop = False
+        item = q.get()
+        while True:
+            if item is None:
+                stop = True
+                break
+            lines.append(item)
+            try:
+                item = q.get_nowait()
+            except queue.Empty:
+                break
+        if lines:
+            try:
+                with open(_chat_log_path(), "a", encoding="utf-8", newline="\n") as handle:
+                    handle.write("".join(line + "\n" for line in lines))
+            except Exception:
+                logger.exception("Failed to append to the Salty chat log")
+        if stop:
+            return
+
+
+def _stop_chat_writer() -> None:
+    """Flush queued chat lines and stop the writer. Safe to call twice."""
+    global _chat_queue, _chat_writer
+    q, writer = _chat_queue, _chat_writer
+    _chat_queue = _chat_writer = None
+    if q is None or writer is None:
+        return
+    q.put(None)
+    writer.join(timeout=2.0)
+
+
 def _write_chat_log(item: dict[str, Any]) -> None:
     # time, channel, from, to, direction, message. Direction is "in" or "out"
     # so a reloaded private line still knows who spoke and who it was for.
+    global _chat_queue, _chat_writer
     line = "\t".join(
         (
             _sanitise_field(item.get("time", "")),
@@ -588,10 +632,22 @@ def _write_chat_log(item: dict[str, Any]) -> None:
         )
     )
     try:
-        with open(_chat_log_path(), "a", encoding="utf-8", newline="\n") as handle:
-            handle.write(line + "\n")
+        if _shutting_down:
+            # Writer is stopped during plugin_stop; append directly.
+            with open(_chat_log_path(), "a", encoding="utf-8", newline="\n") as handle:
+                handle.write(line + "\n")
+            return
+        if _chat_queue is None:
+            _chat_queue = queue.SimpleQueue()
+            _chat_writer = threading.Thread(
+                target=_chat_writer_loop, args=(_chat_queue,),
+                name="SaltyChatLog", daemon=True,
+            )
+            _chat_writer.start()
+            atexit.register(_stop_chat_writer)
+        _chat_queue.put(line)
     except Exception:
-        logger.exception("Failed to append to the Salty chat log")
+        logger.exception("Failed to queue a Salty chat log line")
 
 
 def _parse_chat_log_line(line: str) -> dict[str, Any] | None:
@@ -2004,6 +2060,7 @@ def _clear_chat_log() -> None:
     """Delete the on-disk chat log after confirmation, and clear the window."""
     if not _confirm_clear_log():
         return
+    _stop_chat_writer()  # write out queued lines first so they can't recreate the file
     path = _chat_log_path()
     try:
         if os.path.isfile(path):
@@ -3947,6 +4004,10 @@ def plugin_stop() -> None:
         return
     _shutting_down = True
     logger.info("%s stopping", PLUGIN_DISPLAY_NAME)
+    try:
+        _stop_chat_writer()
+    except Exception:
+        logger.exception("Failed to flush the Salty chat log")
     try:
         _release_grabs()
         _cancel_pending_click()
