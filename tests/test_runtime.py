@@ -58,6 +58,7 @@ sys.modules["theme"] = theme_mod
 # ---- end stubs ----
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 spec = importlib.util.spec_from_file_location(
     "salty_load", REPO_ROOT / "load.py"
 )

@@ -34,13 +34,14 @@ from typing import Any
 
 import myNotebook as nb
 from config import appname, config
+from status_flags import on_foot_from_status
 
 try:
     from theme import theme
 except Exception:  # pragma: no cover - theme is optional
     theme = None
 
-__version__ = "1.2.4"
+__version__ = "1.2.5"
 
 PLUGIN_DISPLAY_NAME = "Salty"
 PLUGIN_INTERNAL_NAME = "Salty"
@@ -2616,6 +2617,15 @@ def _set_on_foot(value: bool) -> None:
         return
     _hide_on_foot = value
     _refresh_clickthrough()
+
+
+def dashboard_entry(cmdr: str, is_beta: bool, entry: dict[str, Any]) -> None:
+    """Refine on-foot from Status.json (taxi/shuttle and multicrew)."""
+    if not isinstance(entry, dict):
+        return
+    value = on_foot_from_status(entry.get("Flags"), entry.get("Flags2"))
+    if value is not None:
+        _set_on_foot(value)
 
 
 def _game_running() -> bool:

@@ -221,6 +221,12 @@ shown. Turn it off from the **Settings** window or the Salty tab in
 <details>
 <summary><b>Changelog</b> (click to expand)</summary>
 
+### 1.2.5
+
+- **Hide from mouse fix:** Status.json now clears a stale on-foot state when
+  you board a shuttle/taxi or join another ship as crew. FSS and normal ship
+  mode stay interactive; the new check is shared with Beep Beep.
+
 ### 1.2.4
 
 - **Chat logging off the UI thread.** New lines for `SaltyChat.log` are
