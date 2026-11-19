@@ -61,6 +61,7 @@ sys.modules["theme"] = theme_mod
 import importlib.util
 
 REPO_ROOT = pathlib.Path(__file__).resolve().parent.parent
+sys.path.insert(0, str(REPO_ROOT))
 spec = importlib.util.spec_from_file_location("salty_shutdown", REPO_ROOT / "load.py")
 salty = importlib.util.module_from_spec(spec)
 spec.loader.exec_module(salty)
